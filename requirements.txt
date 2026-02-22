@@ -1,0 +1,9 @@
+torch
+ultralytics
+numpy
+pandas
+scikit-learn
+joblib
+requests
+streamlit
+flask      
