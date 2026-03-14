@@ -3,14 +3,21 @@ from ultralytics import YOLO
 class VisionTool:
 
     def __init__(self, model_path):
-        print("Loading YOLO model...")
         self.model = YOLO(model_path)
 
-    def detect(self, image_path):
-        results = self.model(image_path)
+    def predict(self, image):
 
-        # get predicted class
-        class_id = int(results[0].probs.top1)
-        confidence = float(results[0].probs.top1conf)
+        results = self.model(image)[0]
 
-        return class_id, confidence
+        # classification probabilities
+        probs = results.probs
+
+        if probs is None:
+            return "nogas", 0.0
+
+        class_id = int(probs.top1)
+        confidence = float(probs.top1conf)
+
+        label = self.model.names[class_id]
+
+        return label, confidence

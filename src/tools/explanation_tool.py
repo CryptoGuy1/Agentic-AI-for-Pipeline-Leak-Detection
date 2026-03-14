@@ -8,13 +8,22 @@ class ExplanationTool:
 
     def explain(self, prompt):
 
-        response = requests.post(
-            self.url,
-            json={
+        try:
+            response = requests.post(
+                self.url,
+                json={
                 "model": self.model_name,
                 "prompt": prompt,
-                "stream": False
-            }
-        )
+                "stream": False,
+                "options": {
+                    "num_predict": 500,   
+                    "temperature": 0.2    
+                }},
+                timeout=777
+            )
 
-        return response.json()["response"]
+            response.raise_for_status()
+            return response.json().get("response", "").strip()
+
+        except Exception as e:
+            return f"Explanation unavailable: {str(e)}"

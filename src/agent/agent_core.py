@@ -1,98 +1,219 @@
-import time
-from src.agent.memory import ShortTermMemory
-from src.agent.goal_manager import GoalManager
 from src.agent.safety import safety_override
+from src.agent.critic_agent import CriticAgent
+from src.agent.reward_system import compute_reward
+from utils.logger import log_run
+import numpy as np
+import time
 
 
 class MultimodalAgent:
 
-    def __init__(self, vision_tool, anomaly_tool, decision_tool, explanation_tool, cycles=10):
+    def __init__(
+        self,
+        vision_tool,
+        anomaly_tool,
+        decision_tool,
+        explanation_tool,
+        memory,
+        goal_manager
+    ):
 
         self.vision = vision_tool
         self.anomaly = anomaly_tool
         self.decision = decision_tool
         self.explainer = explanation_tool
 
-        self.memory = ShortTermMemory(max_size=10)
-        self.goal_manager = GoalManager()
+        self.memory = memory
+        self.goal_manager = goal_manager
 
-        self.cycles = cycles
+        self.critic = CriticAgent(self.explainer)
 
+        # categorical encoding
+        self.gas_map = {
+            "NoGas": 0,
+            "Smoke": 1,
+            "Mixture": 2,
+            "Perfume": 3
+        }
 
-    def build_explanation_prompt(self, state, action, q_values, step):
-
-        anomaly, gas_class, conf, temp, hum = state
-        risk_level = self.goal_manager.evaluate_risk(state)
-
-        prompt = f"""
-        Industrial Safety Agent Report
-
-        Cycle: {step}
-        Goal: {self.goal_manager.get_goal()}
-        Risk Level: {risk_level}
-
-        State:
-        - Anomaly Score: {anomaly:.3f}
-        - Gas Class: {gas_class}
-        - Detection Confidence: {conf:.3f}
-        - Temperature: {temp*100:.1f}
-        - Humidity: {hum*100:.1f}
-
-        DQN Q-values: {q_values}
-        Action Selected: {action}
-
-        Explain why this action aligns with the safety objective.
-        """
-
-        return prompt
-
-
+    # --------------------------------------------------
+    # SINGLE AGENT CYCLE
+    # --------------------------------------------------
     def run_once(self, image, sensor_array, temp, hum, step):
 
-        # 1. Perception
-        gas_class, conf = self.vision.detect(image)
+        start_time = time.time()
+
+        # 1️⃣ Perception
+        gas_class, conf = self.vision.predict(image)
         anomaly_score = self.anomaly.compute(sensor_array)
 
-        # 2. Build state
+        # 2️⃣ Encode categorical gas class
+        gas_id = self.gas_map.get(gas_class, 0)
+
+        # 3️⃣ Build RL state
         state = [
             anomaly_score,
-            gas_class,
+            gas_id,
             conf,
             temp / 100,
             hum / 100
         ]
 
-        # 3. Decision (RL Brain)
+        # 4️⃣ RL Decision
         action, q_values = self.decision.decide(state)
 
-        # 4. Safety Override
+        # 5️⃣ Safety Override
         action = safety_override(state, action)
 
-        # 5. Explanation
-        prompt = self.build_explanation_prompt(state, action, q_values, step)
-        explanation = self.explainer.explain(prompt)
+        # 6️⃣ Reward
+        reward = compute_reward(state, action)
 
-        # 6. Store in memory
-        self.memory.add(state, action, explanation)
+        # 7️⃣ Explanation
+        anomaly, gas_id, conf, temp, hum = state
 
+        explanation = self.explainer.explain(f"""
+You are an industrial methane safety AI.
+
+System readings:
+
+Anomaly score: {anomaly}
+Gas class ID: {gas_id}
+Detection confidence: {conf}
+Temperature: {temp*100} °C
+Humidity: {hum*100} %
+
+RL policy output:
+Action chosen: {action}
+Q-values: {q_values}
+
+Actions meaning:
+0 = Monitor
+1 = Increase sampling
+2 = Request verification
+3 = Raise alarm
+4 = Emergency shutdown
+
+Explain why the chosen action is appropriate.
+""")
+
+        # 8️⃣ Critic review
+        critique = self.critic.critique(
+            state,
+            action,
+            q_values
+        )
+
+        # 9️⃣ Store Memory
+        self.memory.add({
+            "step": step,
+            "state": state,
+            "action": action,
+            "reward": reward,
+            "explanation": explanation,
+            "critique": critique
+        })
+
+        # 🔟 Self Training
+        if len(self.memory.get_recent()) > 20:
+            from src.agent.trainer import AgentTrainer
+
+            trainer = AgentTrainer(self.decision)
+            trainer.train(self.memory)
+
+        # 11️⃣ Latency
+        latency = time.time() - start_time
+
+        # 12️⃣ Logging
+        log_run({
+            "step": step,
+            "state": state,
+            "action": action,
+            "reward": reward,
+            "latency": latency,
+            "explanation": explanation,
+            "critic_review": critique
+        })
+
+        # 13️⃣ Return results
         return {
             "step": step,
             "state": state,
             "action": action,
             "q_values": q_values,
-            "explanation": explanation
+            "reward": reward,
+            "explanation": explanation,
+            "critique": critique
         }
 
+    # --------------------------------------------------
+    # MULTIPLE AGENT CYCLES
+    # --------------------------------------------------
 
-    def run_cycles(self, image, sensor_array, temp, hum):
+    def run_cycles(self, image, sensor_array, temp, hum, cycles=10):
 
         results = []
 
-        for step in range(self.cycles):
+        rewards = []
+        latencies = []
+        alerts = 0
+        false_alerts = 0
 
-            result = self.run_once(image, sensor_array, temp, hum, step)
+        for step in range(cycles):
+
+            result = self.run_once(
+                image=image,
+                sensor_array=sensor_array,
+                temp=temp,
+                hum=hum,
+                step=step
+            )
+
             results.append(result)
 
-            time.sleep(1)  # Prevent CPU overload on Raspberry Pi
+            rewards.append(result["reward"])
+            latencies.append(result.get("latency", 0))
+
+            # alert detection
+            if result["action"] >= 3:
+                alerts += 1
+
+                anomaly = result["state"][0]
+
+                if anomaly < 0.3:
+                    false_alerts += 1
+
+            time.sleep(1)
+
+        # -------- Episode Metrics --------
+
+        episode_reward = sum(rewards)
+
+        average_latency = np.mean(latencies)
+
+        false_alert_rate = (
+            false_alerts / alerts if alerts > 0 else 0
+        )
+
+        # policy entropy
+        action_counts = {}
+
+        for r in results:
+            a = r["action"]
+            action_counts[a] = action_counts.get(a, 0) + 1
+
+        probs = [c / len(results) for c in action_counts.values()]
+
+        policy_entropy = -sum(p * np.log(p) for p in probs)
+
+        episode_metrics = {
+            "episode_reward": episode_reward,
+            "average_latency": float(average_latency),
+            "false_alert_rate": false_alert_rate,
+            "policy_entropy": float(policy_entropy)
+        }
+
+        log_run({
+            "episode_metrics": episode_metrics
+        })
 
         return results
