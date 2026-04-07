@@ -1,0 +1,5 @@
+true_label,num_ready_steps,episode_reward,avg_latency_ms,p95_latency_ms,mean_policy_conf,alerts,emergency_shutdowns,final_action,final_action_name,dominant_action,dominant_action_name
+Mixture,21,22.164106159160536,27463.91896974473,28870.3191280365,1.0,21,21,4,Emergency Shutdown,4,Emergency Shutdown
+NoGas,21,13.999999999999996,25058.77046358018,31446.906566619873,0.8380570567789531,0,0,0,Monitor,0,Monitor
+Perfume,21,11.6,23662.3664469946,31119.96626853943,0.5532292666889372,5,5,2,Request Verification,2,Request Verification
+Smoke,21,22.813335160414383,23966.761350631714,26926.46884918213,1.0,21,0,3,Raise Alarm,3,Raise Alarm

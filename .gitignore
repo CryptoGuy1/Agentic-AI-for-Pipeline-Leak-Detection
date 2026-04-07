@@ -12,7 +12,5 @@ venv/
 *.pth
 *.ckpt
 
-# logs
-logs/
-runs/
+
 
