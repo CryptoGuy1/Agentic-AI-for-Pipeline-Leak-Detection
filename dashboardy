@@ -319,67 +319,298 @@ def inject_css():
 def generate_explanation(gas_id, action, anomaly, q_values, is_correct, policy_conf):
     gas = GAS_NAMES.get(gas_id, "Unknown")
     act = ACTIONS.get(action, "Unknown")
-    q   = np.array(q_values)
-    q_gap = float(q.max() - np.sort(q)[-2]) if len(q) > 1 else 0.0
+    q = np.array(q_values, dtype=float)
 
-    if not is_correct:
-        correct = CORRECT_ACTIONS.get(gas_id, [])
-        exp_str = " or ".join(ACTIONS[a] for a in correct)
-        sev = "SAFETY CRITICAL" if gas_id in DANGER_GAS_IDS else "suboptimal"
-        return (
-            f"[{sev}] DQN chose {act} for {gas} (gas_id={gas_id}), correct is {exp_str}. "
-            f"Q-gap={q_gap:.4f} {'— very low, model uncertain.' if q_gap < 0.5 else '.'} "
-            f"Anomaly={anomaly:.4f}. Review sensor boundary conditions."
-        )
+    # ranked actions
+    ranked_idx = np.argsort(q)[::-1]
+    top_idx = int(ranked_idx[0])
+    second_idx = int(ranked_idx[1]) if len(ranked_idx) > 1 else top_idx
+    q_gap = float(q[top_idx] - q[second_idx]) if len(ranked_idx) > 1 else 0.0
 
-    desc = {
-        2: (f"Emergency Shutdown confirmed for Mixture gas (gas_id=2) — highest hazard class. "
-            f"Anomaly={anomaly:.3f} {'(elevated)' if anomaly>0.4 else '(low — model uses sensor features not anomaly)'}. "
-            f"Q(Emergency)={q[4]:.3f}, gap={q_gap:.3f}. Conf={policy_conf*100:.1f}%. "
-            f"Protocol: evacuate, isolate fuel lines, emergency services."),
-        1: (f"Raise Alarm confirmed for Smoke (gas_id=1). Combustion byproducts present. "
-            f"Anomaly={anomaly:.3f}. Q(Alarm)={q[3]:.3f}, gap={q_gap:.3f}. Conf={policy_conf*100:.1f}%. "
-            f"Protocol: audible alarm, evacuation, check ignition sources."),
-        0: (f"Monitor confirmed (NoGas, gas_id=0). Anomaly={anomaly:.3f} within baseline. "
-            f"Q(Monitor)={q[0]:.3f}. No hazardous signature. System continues normal surveillance."),
-        3: (f"VOC response (Perfume, gas_id=3). Anomaly={anomaly:.3f} — "
-            f"{'ventilation advised (high anomaly)' if anomaly>0.5 else 'log-only response (low anomaly)'}. "
-            f"Agent chose {act} (action {action}). Conf={policy_conf*100:.1f}%. Non-hazardous."),
-    }
-    return desc.get(gas_id, f"Action {action} ({act}). Anomaly={anomaly:.3f}.")
+    expected = CORRECT_ACTIONS.get(gas_id, [])
+    expected_str = " or ".join(ACTIONS[a] for a in expected) if expected else "Unknown"
+
+    # -----------------------------
+    # 1. State interpretation
+    # -----------------------------
+    if anomaly >= 0.75:
+        anomaly_text = "very high anomaly"
+    elif anomaly >= 0.50:
+        anomaly_text = "moderately elevated anomaly"
+    elif anomaly >= 0.25:
+        anomaly_text = "mild anomaly"
+    else:
+        anomaly_text = "low anomaly"
+
+    if gas_id in DANGER_GAS_IDS:
+        risk_level = "high-risk hazardous gas"
+    elif gas_id == 3:
+        risk_level = "non-hazardous VOC-like event"
+    else:
+        risk_level = "baseline / safe state"
+
+    # -----------------------------
+    # 2. Confidence assessment
+    # -----------------------------
+    if policy_conf >= 0.85:
+        conf_text = "very high confidence"
+    elif policy_conf >= 0.60:
+        conf_text = "high confidence"
+    elif policy_conf >= 0.35:
+        conf_text = "moderate confidence"
+    else:
+        conf_text = "low confidence"
+
+    if q_gap >= 2.0:
+        gap_text = "clear separation from alternatives"
+    elif q_gap >= 0.75:
+        gap_text = "reasonable separation from alternatives"
+    else:
+        gap_text = "weak separation from alternatives"
+
+    # -----------------------------
+    # 3. Action justification
+    # -----------------------------
+    action_reason = {
+        0: "The policy selected monitoring because the state appears operationally stable and does not justify escalation.",
+        1: "The policy selected increased sampling to gather more evidence before escalation.",
+        2: "The policy selected request verification because the event appears non-critical but still worth confirming.",
+        3: "The policy selected raise alarm because the pattern is consistent with a hazardous condition requiring immediate notification.",
+        4: "The policy selected emergency shutdown because this state matches the highest-severity safety response."
+    }.get(action, "The policy selected this action based on the highest Q-value.")
+
+    # -----------------------------
+    # 4. Why other actions were not chosen
+    # -----------------------------
+    alternatives = []
+    for idx in ranked_idx[1:3]:
+        alternatives.append(f"{ACTIONS[int(idx)]} (Q={q[int(idx)]:.3f})")
+    alternatives_text = ", ".join(alternatives) if alternatives else "No alternatives available"
+
+    # -----------------------------
+    # 5. Risk implication
+    # -----------------------------
+    if is_correct:
+        if gas_id == 2 and action == 4:
+            risk_text = "This is the correct maximum-severity response for Mixture gas and minimizes the chance of delayed intervention."
+        elif gas_id == 1 and action == 3:
+            risk_text = "This is the correct alarm-level response for Smoke and supports rapid hazard escalation."
+        elif gas_id == 0 and action == 0:
+            risk_text = "This avoids unnecessary false alarms while maintaining surveillance."
+        elif gas_id == 3 and action in [1, 2]:
+            risk_text = "This avoids overreaction to a non-hazardous perfume/VOC event while still preserving caution."
+        else:
+            risk_text = "This action is policy-correct for the current state."
+    else:
+        if gas_id in DANGER_GAS_IDS:
+            risk_text = "This is a safety-critical mismatch. The selected action could delay the correct emergency response."
+        else:
+            risk_text = "This is a non-critical mismatch. The main consequence is unnecessary disruption or inefficient operator workflow."
+
+    # -----------------------------
+    # 6. Protocol recommendation
+    # -----------------------------
+    protocol = {
+        0: "Recommended protocol: continue monitoring, keep logging sensor values, and wait for further evidence.",
+        1: "Recommended protocol: increase sensor polling rate, gather additional readings, and reassess within the next cycle.",
+        2: "Recommended protocol: request operator verification or secondary confirmation before escalation.",
+        3: "Recommended protocol: trigger alarm workflow, notify personnel, and inspect the source zone immediately.",
+        4: "Recommended protocol: initiate shutdown, isolate the system, evacuate personnel if needed, and follow emergency procedure."
+    }.get(action, "Recommended protocol: follow operator review procedure.")
+
+    # -----------------------------
+    # 7. Final multi-line explanation
+    # -----------------------------
+    explanation = (
+        f"State interpretation:\n"
+        f"- Gas class: {gas} (gas_id={gas_id})\n"
+        f"- Anomaly score: {anomaly:.4f} → {anomaly_text}\n"
+        f"- Risk profile: {risk_level}\n\n"
+
+        f"Action justification:\n"
+        f"- Selected action: {act} (action={action})\n"
+        f"- Q-value of selected action: {q[action]:.3f}\n"
+        f"- Model confidence: {policy_conf:.4f} → {conf_text}\n"
+        f"- Q-gap vs next-best action: {q_gap:.3f} → {gap_text}\n"
+        f"- {action_reason}\n\n"
+
+        f"Alternative actions not chosen:\n"
+        f"- Top alternatives: {alternatives_text}\n"
+        f"- Expected correct action(s) for this gas: {expected_str}\n\n"
+
+        f"Risk implication:\n"
+        f"- {risk_text}\n\n"
+
+        f"Protocol recommendation:\n"
+        f"- {protocol}"
+    )
+
+    return explanation
 
 
 def generate_critique(gas_id, action, anomaly, q_values, is_correct, policy_conf):
-    q     = np.array(q_values)
-    q_gap = float(q.max() - np.sort(q)[-2]) if len(q) > 1 else 0.0
-    gas   = GAS_NAMES.get(gas_id, "Unknown")
-    parts = []
+    gas = GAS_NAMES.get(gas_id, "Unknown")
+    act = ACTIONS.get(action, "Unknown")
+    q = np.array(q_values, dtype=float)
 
+    ranked_idx = np.argsort(q)[::-1]
+    top_idx = int(ranked_idx[0])
+    second_idx = int(ranked_idx[1]) if len(ranked_idx) > 1 else top_idx
+    q_gap = float(q[top_idx] - q[second_idx]) if len(ranked_idx) > 1 else 0.0
+
+    expected = CORRECT_ACTIONS.get(gas_id, [])
+    expected_str = " or ".join(ACTIONS[a] for a in expected) if expected else "Unknown"
+
+    # 1. Confidence assessment
     if policy_conf < 0.15:
-        parts.append(f"CONFIDENCE WARNING: {policy_conf:.4f} < 0.15. Q-gap={q_gap:.4f}. Escalate or flag for human review.")
+        confidence_status = "very low confidence"
+        confidence_comment = (
+            "The policy confidence is critically low. "
+            "This means the network does not strongly separate the selected action from competing actions."
+        )
     elif policy_conf < 0.30:
-        parts.append(f"Moderate confidence ({policy_conf:.4f}). Monitor this class boundary.")
+        confidence_status = "low-to-moderate confidence"
+        confidence_comment = (
+            "The model shows only limited separation between the chosen action and alternatives. "
+            "This is usable, but should be monitored carefully."
+        )
+    elif policy_conf < 0.60:
+        confidence_status = "moderate confidence"
+        confidence_comment = (
+            "The action is supported by the Q-values, but the margin is not dominant enough to be considered highly robust."
+        )
     else:
-        parts.append(f"Confidence {policy_conf:.4f} — acceptable for autonomous operation.")
+        confidence_status = "high confidence"
+        confidence_comment = (
+            "The selected action has strong support from the policy and is clearly separated from competing alternatives."
+        )
 
+    # 2. Q-gap interpretation
+    if q_gap < 0.25:
+        gap_comment = (
+            "The Q-gap is very small, which means the model considered multiple actions nearly equally plausible. "
+            "This increases operational uncertainty."
+        )
+    elif q_gap < 0.75:
+        gap_comment = (
+            "The Q-gap is moderate. The model has a preferred action, but alternative actions are still relatively close."
+        )
+    else:
+        gap_comment = (
+            "The Q-gap is large. The selected action is clearly dominant compared with the next-best alternative."
+        )
+
+    # 3. Decision quality
     if is_correct:
         if gas_id == 2 and action == 4:
-            parts.append("Maximum-severity response for maximum-hazard gas. Correct severity discrimination.")
+            decision_quality = (
+                "The agent selected the maximum-severity response for Mixture gas. "
+                "This is appropriate because Mixture represents the highest operational hazard in this mapping."
+            )
+        elif gas_id == 1 and action == 3:
+            decision_quality = (
+                "The agent correctly escalated Smoke to Raise Alarm. "
+                "This is the right balance between fast response and avoiding unnecessary shutdown."
+            )
         elif gas_id == 0 and action == 0:
-            parts.append("Conservative no-false-alarm response. Sensor calibration check recommended periodically.")
+            decision_quality = (
+                "The agent correctly stayed in Monitor mode for a NoGas condition. "
+                "This reduces false alarms and supports operational stability."
+            )
+        elif gas_id == 3 and action in [1, 2]:
+            decision_quality = (
+                "The agent correctly treated Perfume as a non-hazardous VOC-type event. "
+                "This avoids an overreaction while still keeping verification in the loop."
+            )
         else:
-            parts.append("Policy-correct decision. No safety concerns.")
+            decision_quality = (
+                "The decision is policy-correct and consistent with the expected action mapping."
+            )
     else:
         if gas_id in DANGER_GAS_IDS:
-            parts.append(f"CRITICAL: {gas} misclassified. Wrong action {action} risks delayed emergency response. Retrain with higher danger-miss penalty.")
+            decision_quality = (
+                f"This is a safety-critical error. For {gas}, the expected action is {expected_str}, "
+                f"but the model selected {act}. In deployment, this could delay the correct emergency response."
+            )
         else:
-            parts.append(f"Non-critical error for {gas}. Affects operational efficiency, not safety.")
+            decision_quality = (
+                f"This is an operational error rather than a direct safety-critical one. "
+                f"For {gas}, the expected action is {expected_str}, but the model selected {act}. "
+                f"This may increase nuisance handling or reduce decision efficiency."
+            )
 
-    if gas_id == 2 and anomaly < 0.20:
-        parts.append(f"Note: Low anomaly {anomaly:.3f} for Mixture is expected — LSTM reconstructs it well. Model correctly uses sensor features.")
+    # 4. Anomaly interpretation
+    if anomaly < 0.20:
+        anomaly_comment = (
+            "The anomaly score is low. That suggests the autoencoder reconstructed this state well, "
+            "so the DQN is relying more heavily on the sensor-derived state features than on anomaly escalation."
+        )
+    elif anomaly < 0.50:
+        anomaly_comment = (
+            "The anomaly score is moderate. This indicates some deviation from baseline, "
+            "but not enough by itself to justify maximum escalation."
+        )
+    else:
+        anomaly_comment = (
+            "The anomaly score is high. This supports a stronger safety posture and gives additional justification for escalation."
+        )
 
-    return " | ".join(parts)
+    # 5. Alternative-action critique
+    alternatives = []
+    for idx in ranked_idx[1:3]:
+        alternatives.append(f"{ACTIONS[int(idx)]} (Q={q[int(idx)]:.3f})")
+    alternatives_text = ", ".join(alternatives) if alternatives else "No close alternatives"
 
+    alternative_comment = (
+        f"The strongest alternative actions were: {alternatives_text}. "
+        f"This helps explain whether the current decision was dominant or only marginally preferred."
+    )
+
+    # 6. Operational recommendation
+    if policy_conf < 0.15 or q_gap < 0.25:
+        recommendation = (
+            "Recommendation: flag this step for operator review, log the sensor pattern, "
+            "and consider increasing the penalty for uncertainty-sensitive mistakes during retraining."
+        )
+    elif not is_correct and gas_id in DANGER_GAS_IDS:
+        recommendation = (
+            "Recommendation: prioritize retraining on hazardous-class boundary cases, "
+            "increase danger-miss penalties, and review class balance for Smoke and Mixture."
+        )
+    elif not is_correct:
+        recommendation = (
+            "Recommendation: review confusion cases for non-hazardous classes and tighten the policy around class boundaries."
+        )
+    else:
+        recommendation = (
+            "Recommendation: keep this decision pattern, but continue monitoring repeated low-gap or low-confidence cases for drift."
+        )
+
+    critique = (
+        f"Confidence assessment:\n"
+        f"- Confidence: {policy_conf:.4f} → {confidence_status}\n"
+        f"- {confidence_comment}\n"
+        f"- Q-gap: {q_gap:.4f}\n"
+        f"- {gap_comment}\n\n"
+
+        f"Decision quality review:\n"
+        f"- Gas class: {gas} (gas_id={gas_id})\n"
+        f"- Selected action: {act} (action={action})\n"
+        f"- Expected action(s): {expected_str}\n"
+        f"- {decision_quality}\n\n"
+
+        f"State critique:\n"
+        f"- Anomaly score: {anomaly:.4f}\n"
+        f"- {anomaly_comment}\n\n"
+
+        f"Alternative-action review:\n"
+        f"- {alternative_comment}\n\n"
+
+        f"Operational recommendation:\n"
+        f"- {recommendation}"
+    )
+
+    return critique
 
 # =========================================================
 # DATA HELPERS
@@ -431,7 +662,7 @@ def q_bar_chart(q_values, action, label):
         textfont=dict(size=10, color="#94a3b8"),
     ))
     fig.update_layout(**PLOT_LAYOUT, title=dict(text=f"Q-Values — {label}", font=dict(size=13, color="#f59e0b")), height=260)
-    fig.update_yaxis(title="Q-Value")
+    fig.update_layout(yaxis_title="Q-Value")
     return fig
 
 
@@ -452,24 +683,33 @@ def action_distribution_chart(logs):
 def anomaly_scatter(logs):
     df_plot = pd.DataFrame(logs)
     fig = go.Figure()
+
     for lbl, color in GAS_COLORS.items():
         sub = df_plot[df_plot["true_label"] == lbl]
-        if sub.empty: continue
+        if sub.empty:
+            continue
         fig.add_trace(go.Scatter(
-            x=sub["anomaly_used"], y=sub["action"],
+            x=sub["anomaly_used"],
+            y=sub["action"],
             mode="markers",
             name=lbl,
             marker=dict(color=color, size=6, opacity=0.7, line=dict(color=color, width=0.5)),
         ))
+
     fig.update_layout(
         **PLOT_LAYOUT,
         title=dict(text="Anomaly Score vs Action", font=dict(size=13, color="#f59e0b")),
         height=300,
-        yaxis=dict(tickmode="array", tickvals=list(range(5)),
-                   ticktext=[f"{i}:{ACTIONS[i][:10]}" for i in range(5)],
-                   gridcolor="#1e3a5f"),
-        xaxis=dict(title="Anomaly Score", gridcolor="#1e3a5f"),
     )
+
+    fig.update_xaxes(title_text="Anomaly Score", gridcolor="#1e3a5f")
+    fig.update_yaxes(
+        tickmode="array",
+        tickvals=list(range(5)),
+        ticktext=[f"{i}:{ACTIONS[i][:10]}" for i in range(5)],
+        gridcolor="#1e3a5f",
+    )
+
     return fig
 
 
