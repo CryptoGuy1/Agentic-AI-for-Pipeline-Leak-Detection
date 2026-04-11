@@ -256,7 +256,7 @@ def compute_reward(state, action, gas_id, anomaly=None):
 
 ---
 
-## Explainability — Rule-Based, No LLM Required
+## Explainability — used of Gemma3:1b for explainability layer
 
 Every decision automatically generates two outputs in both `main.py` and `app.py`:
 
@@ -299,9 +299,10 @@ GasSafeAI/
 ├── test_df_processed.csv            # Normalized test set (export from notebook)
 │
 ├── models/
-│   ├── DeepQmodel.pth               # Trained Dueling DQN weights
+│   ├── DeepQnet.pth               # Trained Dueling DQN weights
 │   └── lstm_autoencoder_weights.pth # LSTM autoencoder
-│
+│   |__ yolov8_gas_classifier.pt
+|   |__ 
 ├── gas_dqn_honest_split.ipynb       # Production training notebook
 ├── notebook_patches.ipynb           # Critical bug fixes (apply before training)
 ├── gas_id_fix_patch.ipynb           # Gas-id mismatch fix and verification cell
@@ -313,11 +314,14 @@ GasSafeAI/
 │   │   ├── reward_system.py         # Reward function (gas_id-based)
 │   │   ├── memory.py                # Short-term memory buffer
 │   │   └── goal_manager.py          # Goal tracking
+|   |   |__ critic.py
+|   |   |__ metrics_logger.py
+|   |   |__ safety.py
 │   └── tools/
 │       ├── decision_tool.py         # DQN model loader and inference
 │       ├── anomaly_tool.py          # LSTM AE wrapper
 │       └── explanation_tool.py      # Optional LLM explanation (Ollama)
-│
+│       |__ vision_tool.py
 ├── evaluation_log.csv               # Per-step output (auto-generated)
 ├── episode_summary.csv              # Per-class summary (auto-generated)
 └── requirements.txt
@@ -346,11 +350,11 @@ pip install -r requirements.txt
 
 **`requirements.txt`:**
 ```
-streamlit>=1.28.0
-plotly>=5.0.0
-pandas>=1.5.0
-numpy>=1.23.0
-torch>=2.0.0
+streamlit
+plotly
+pandas
+numpy
+torch
 ultralytics
 scikit-learn
 ```
@@ -409,4 +413,4 @@ Open `gas_dqn_honest_split.ipynb` and apply all patches from `notebook_patches.i
 
 ## License
 
-MIT License — see `LICENSE` for full terms.
+*MIT License — see `LICENSE` for full terms.
