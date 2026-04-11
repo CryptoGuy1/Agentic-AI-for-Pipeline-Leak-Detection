@@ -20,47 +20,65 @@ The system detects four gas conditions and responds with one of five calibrated 
 
 ## Core AI Pipeline
 
-```
-7 MQ Gas Sensors                      Thermal / Optical Camera
-(MQ2, MQ3, MQ5, MQ6, MQ7, MQ8, MQ135)         │
-          │                                     │
-          └─────────────────┬───────────────────┘
-                            │
-                            ▼
-            ┌───────────────────────────────┐
-            │       Perception Layer        │
-            │  YOLOv8 → gas class label     │
-            │  LSTM AE → anomaly score      │
-            └───────────────────────────────┘
-                            │
-                            ▼
-            ┌───────────────────────────────┐
-            │  Feature Engineering          │
-            │  20-step rolling window:      │
-            │  [anomaly | current | delta   │
-            │             | std]  = 22 dim  │
-            └───────────────────────────────┘
-                            │
-                            ▼
-            ┌───────────────────────────────┐
-            │     Decision Layer            │
-            │  Dueling Double DQN + PER     │
-            │  → 1 of 5 safety actions      │
-            └───────────────────────────────┘
-                            │
-                            ▼
-            ┌───────────────────────────────┐
-            │   Explainability Layer        │
-            │  Rule-based expert engine     │
-            │  (no LLM, always active)      │
-            └───────────────────────────────┘
-                            │
-                            ▼
-            ┌───────────────────────────────┐
-            │   GasSafe AI Dashboard        │
-            │   Streamlit SCADA Interface   │
-            └───────────────────────────────┘
-```
+
+If you want a cleaner and more professional README version, use this instead:
+
+```markdown
+## System Architecture
+
+```text
+          Thermal Image Input                          Sensor Time-Series Input
+                 │                                               │
+                 ▼                                               ▼
+   ┌───────────────────────────┐                  ┌───────────────────────────┐
+   │   YOLOv8 Image Classifier │                  │   LSTM Autoencoder        │
+   │   - gas class             │                  │   - anomaly score         │
+   │   - confidence score      │                  │   - abnormal pattern flag │
+   └───────────────────────────┘                  └───────────────────────────┘
+                 │                                               │
+                 └───────────────────────┬───────────────────────┘
+                                         │
+                                         ▼
+                    ┌─────────────────────────────────────────┐
+                    │        Multimodal State Builder         │
+                    │  Combines:                              │
+                    │  - gas class ID                         │
+                    │  - classification confidence            │
+                    │  - anomaly score                        │
+                    │  - sensor features                      │
+                    │  - optional temperature/humidity        │
+                    └─────────────────────────────────────────┘
+                                         │
+                                         ▼
+                    ┌─────────────────────────────────────────┐
+                    │      Reinforcement Learning Agent       │
+                    │               DQN Policy                │
+                    │                                         │
+                    │  Actions:                               │
+                    │  0 → Monitor                            │
+                    │  1 → Increase Sampling                  │
+                    │  2 → Request Verification               │
+                    │  3 → Raise Alarm                        │
+                    │  4 → Emergency Shutdown                 │
+                    └─────────────────────────────────────────┘
+                                         │
+                                         ▼
+                    ┌─────────────────────────────────────────┐
+                    │      Explainability & Safety Layer      │
+                    │  - action justification                 │
+                    │  - confidence warning                   │
+                    │  - risk interpretation                  │
+                    │  - operator-facing reasoning            │
+                    └─────────────────────────────────────────┘
+                                         │
+                                         ▼
+                    ┌─────────────────────────────────────────┐
+                    │       Streamlit Control Dashboard       │
+                    │  - live predictions                     │
+                    │  - threat level                         │
+                    │  - alerts and incidents                 │
+                    │  - explanation console                  │
+                    └─────────────────────────────────────────┘
 
 ---
 
