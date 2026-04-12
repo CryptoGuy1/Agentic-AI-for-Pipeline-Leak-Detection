@@ -1,36 +1,37 @@
-import time
+import os
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 from src.tools.anomaly_tool import AnomalyTool
 from src.tools.decision_tool import DecisionTool
 from src.tools.explanation_tool import ExplanationTool
+from src.tools.vision_tool import VisionTool
 from src.agent.agent_core import MultimodalAgent
 from src.agent.memory import ShortTermMemory
 from src.agent.goal_manager import GoalManager
-from src.agent.reward_system import compute_reward, is_correct_action, get_expected_action
 
 
-# =========================================================
-# SETTINGS
-# =========================================================
 DQN_MODEL_PATH = "models/DeepQnet.pth"
-AE_MODEL_PATH  = "models/lstm_autoencoder_weights.pth"
+AE_MODEL_PATH = "models/lstm_autoencoder_weights.pth"
+YOLO_MODEL_PATH = "models/yolov8_gas_classifier.pt"
 
-RUN_MODE = "live"   # "verify" or "live"
+RUN_MODE = "folder_live_test"
 
-PROCESSED_TEST_DF_PATH = "test_df_processed.csv"
 RAW_CSV_PATH = r"C:\Users\HP\Downloads\archive (7)\Multimodal Dataset for Gas Detection and Classification\Gas Sensors Measurements\Gas_Sensors_Measurements.csv"
+IMAGE_BASE_PATH = r"C:\Users\HP\Downloads\archive (7)\Multimodal Dataset for Gas Detection and Classification\Thermal Camera Images"
 
-WINDOW_SIZE           = 20
-MAX_STEPS_PER_EPISODE = 40
-
-USE_MC_DROPOUT      = True
+WINDOW_SIZE = 20
+USE_MC_DROPOUT = True
 ENABLE_EXPLANATIONS = True
-ENABLE_CRITIQUE     = True
+ENABLE_CRITIQUE = True
 
-SAVE_LOG_PATH     = "evaluation_log.csv"
-SAVE_SUMMARY_PATH = "episode_summary.csv"
+RUN_ANOMALY_DIAGNOSTICS = True
+RUN_ANOMALY_SENSITIVITY_TEST = True
+
+SAVE_LOG_PATH = "folder_live_test_log.csv"
+SAVE_SUMMARY_PATH = "folder_live_test_summary.csv"
 
 ACTIONS = {
     0: "Monitor",
@@ -40,41 +41,31 @@ ACTIONS = {
     4: "Emergency Shutdown",
 }
 
-# =========================================================
-# THE CANONICAL GAS_MAP
-# =========================================================
-# This is the ONLY source of truth for label → gas_id.
-# It must match exactly what the notebook used during training.
-#
-# YOLO's internal class indices are DIFFERENT from this map.
-# YOLO class 0 = Mixture, YOLO class 1 = NoGas, etc.
-# (proved by the verify output: label=Mixture had gas_id=0 from YOLO)
-#
-# We NEVER use YOLO's class index as the ground-truth gas_id.
-# We ALWAYS derive gas_id from the text label via this map.
-#
-# gas_id → correct action(s):
-#   0 (NoGas)   → [0]    Monitor
-#   1 (Smoke)   → [3]    Raise Alarm
-#   2 (Mixture) → [4]    Emergency Shutdown
-#   3 (Perfume) → [1, 2] Increase Sampling or Request Verification
 GAS_MAP = {
-    "NoGas":   0,
-    "Smoke":   1,
+    "NoGas": 0,
+    "Smoke": 1,
     "Mixture": 2,
     "Perfume": 3,
 }
 
-CORRECT_ACTIONS = {0: [0], 1: [3], 2: [4], 3: [1, 2]}
-
 RAW_SENSOR_COLS = ["MQ2", "MQ3", "MQ5", "MQ6", "MQ7", "MQ8", "MQ135"]
-DELTA_COLS      = ["dMQ2", "dMQ3", "dMQ5", "dMQ6", "dMQ7", "dMQ8", "dMQ135"]
-STD_COLS        = ["sMQ2", "sMQ3", "sMQ5", "sMQ6", "sMQ7", "sMQ8", "sMQ135"]
+
+IMAGE_NAME_COL_CANDIDATES = [
+    "Corresponding Image Name",
+    "corresponding_image_name",
+    "image_name",
+    "Image Name",
+]
+
+LABEL_COL_CANDIDATES = [
+    "Gas",
+    "label",
+    "Label",
+    "class",
+    "Class",
+]
 
 
-# =========================================================
-# INIT TOOLS
-# =========================================================
 print("Initializing tools...")
 
 decision = DecisionTool(
@@ -84,47 +75,41 @@ decision = DecisionTool(
     window_size=WINDOW_SIZE,
 )
 
-anomaly      = None
-explainer    = None
-memory       = None
-goal_manager = None
-agent        = None
+anomaly = AnomalyTool(AE_MODEL_PATH)
+vision = VisionTool(YOLO_MODEL_PATH)
+explainer = ExplanationTool("gemma3:1b") if ENABLE_EXPLANATIONS else None
 
-if RUN_MODE == "live":
-    anomaly      = AnomalyTool(AE_MODEL_PATH)
-    explainer    = ExplanationTool("gemma3:1b") if ENABLE_EXPLANATIONS else None
-    memory       = ShortTermMemory(max_size=200)
-    goal_manager = GoalManager()
+critic = None
 
-    agent = MultimodalAgent(
-        anomaly_tool=anomaly,
-        decision_tool=decision,
-        explanation_tool=explainer,
-        memory=memory,
-        goal_manager=goal_manager,
-        critic=None,
-        window_size=WINDOW_SIZE,
-    )
+memory = ShortTermMemory(max_size=200)
+goal_manager = GoalManager()
+
+agent = MultimodalAgent(
+    anomaly_tool=anomaly,
+    decision_tool=decision,
+    explanation_tool=explainer,
+    memory=memory,
+    goal_manager=goal_manager,
+    critic=critic,
+    window_size=WINDOW_SIZE,
+    vision_tool=vision,
+)
 
 print("Tools initialized successfully.")
 
 
-# =========================================================
-# HELPERS
-# =========================================================
+def infer_column(df, candidates):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
 def row_to_sensor_array(row):
     return [float(row[c]) for c in RAW_SENSOR_COLS]
 
 
 def get_true_gas_id(label: str) -> int:
-    """
-    Convert a gas label string to the canonical gas_id via GAS_MAP.
-
-    This is the ONLY correct way to get gas_id in this codebase.
-    Do NOT use the gas_id column from test_df — that column was
-    populated from YOLO predictions whose class ordering differs
-    from GAS_MAP. YOLO class 0 = Mixture, but GAS_MAP['Mixture'] = 2.
-    """
     if label not in GAS_MAP:
         raise ValueError(
             f"Unknown label '{label}'. Must be one of: {list(GAS_MAP.keys())}"
@@ -132,419 +117,367 @@ def get_true_gas_id(label: str) -> int:
     return GAS_MAP[label]
 
 
-def infer_label_column(df):
-    for c in ["label", "Label", "class", "Class", "gas_label", "Gas"]:
-        if c in df.columns:
-            return c
-    return None
-
-
-def infer_anomaly_column(df):
-    for c in ["anomaly_norm", "anomaly", "anomaly_score", "anomaly_scaled",
-              "anomaly_normalized", "anom", "anomaly_normed"]:
-        if c in df.columns:
-            return c
-    return None
-
-
-def build_state_columns_from_df(df):
-    anomaly_col = infer_anomaly_column(df)
-    if anomaly_col is None:
-        raise ValueError("Cannot find anomaly column in processed CSV.")
-
-    missing = (
-        [c for c in RAW_SENSOR_COLS if c not in df.columns]
-        + [c for c in DELTA_COLS if c not in df.columns]
-        + [c for c in STD_COLS if c not in df.columns]
-    )
-    if missing:
-        raise ValueError(f"Processed test df is missing columns: {missing}")
-
-    return anomaly_col, [anomaly_col] + RAW_SENSOR_COLS + DELTA_COLS + STD_COLS
-
-
-def summarize_verify_results(results, true_label=None):
-    if not results:
-        return {
-            "true_label": true_label, "num_steps": 0,
-            "accuracy": 0.0, "correct_count": 0,
-            "expected_actions": "N/A", "avg_latency_ms": 0.0,
-            "p95_latency_ms": 0.0, "mean_policy_conf": 0.0,
-            "mean_reward": 0.0, "final_action": None,
-            "final_action_name": None, "dominant_action": None,
-            "dominant_action_name": None,
-        }
-
-    latencies_ms  = [r["latency_ms"]         for r in results]
-    policy_confs  = [r["policy_confidence"]   for r in results]
-    actions       = [r["action"]              for r in results]
-    rewards       = [r.get("reward", 0.0)     for r in results]
-    is_corrects   = [r.get("is_correct")      for r in results]
-
-    valid_correct = [c for c in is_corrects if c is not None]
-    accuracy      = float(np.mean(valid_correct)) if valid_correct else None
-
-    dominant_action = int(pd.Series(actions).value_counts().index[0])
-
-    return {
-        "true_label"          : true_label,
-        "num_steps"           : len(results),
-        "accuracy"            : round(accuracy, 4) if accuracy is not None else "N/A",
-        "correct_count"       : sum(1 for c in is_corrects if c),
-        "expected_actions"    : results[0].get("expected_actions", "N/A"),
-        "avg_latency_ms"      : float(np.mean(latencies_ms)),
-        "p95_latency_ms"      : float(np.percentile(latencies_ms, 95)),
-        "mean_policy_conf"    : float(np.mean(policy_confs)),
-        "mean_reward"         : float(np.mean(rewards)),
-        "final_action"        : int(actions[-1]),
-        "final_action_name"   : ACTIONS[int(actions[-1])],
-        "dominant_action"     : dominant_action,
-        "dominant_action_name": ACTIONS[dominant_action],
-    }
-
-
-def summarize_live_results(results, true_label=None):
-    ready = [r for r in results if r.get("ready", False)]
-    if not ready:
-        return {
-            "true_label": true_label, "num_ready_steps": 0,
-            "episode_reward": 0.0, "avg_latency_ms": 0.0,
-            "p95_latency_ms": 0.0, "mean_policy_conf": 0.0,
-            "alerts": 0, "emergency_shutdowns": 0,
-            "final_action": None, "final_action_name": None,
-            "dominant_action": None, "dominant_action_name": None,
-        }
-
-    latencies_ms    = [r["latency"] * 1000  for r in ready]
-    rewards         = [r["reward"]           for r in ready]
-    policy_confs    = [r["policy_confidence"] for r in ready]
-    actions         = [r["action"]            for r in ready]
-    dominant_action = int(pd.Series(actions).value_counts().index[0])
-
-    return {
-        "true_label"          : true_label,
-        "num_ready_steps"     : len(ready),
-        "episode_reward"      : float(np.sum(rewards)),
-        "avg_latency_ms"      : float(np.mean(latencies_ms)),
-        "p95_latency_ms"      : float(np.percentile(latencies_ms, 95)),
-        "mean_policy_conf"    : float(np.mean(policy_confs)),
-        "alerts"              : int(sum(1 for a in actions if a >= 3)),
-        "emergency_shutdowns" : int(sum(1 for a in actions if a == 4)),
-        "final_action"        : int(actions[-1]),
-        "final_action_name"   : ACTIONS[int(actions[-1])],
-        "dominant_action"     : dominant_action,
-        "dominant_action_name": ACTIONS[dominant_action],
-    }
-
-
-# =========================================================
-# MODE 1: NOTEBOOK-FAITHFUL VERIFICATION
-# =========================================================
-def run_verify_mode():
-    print("\nRunning NOTEBOOK-FAITHFUL verification mode...")
-
-    df = pd.read_csv(PROCESSED_TEST_DF_PATH)
-    print(f"Processed test df loaded: {df.shape}")
-    print(f"\nColumns: {df.columns.tolist()}")
-
-    anomaly_col, state_cols = build_state_columns_from_df(df)
-    print(f"\nAnomaly column : {anomaly_col}")
-    print(f"State columns  : {state_cols}")
-
-    label_col = infer_label_column(df)
-    print(f"Label column   : {label_col or 'NOT FOUND'}")
-
-    # ── IMPORTANT: we do NOT use the gas_id column from test_df ──────
-    # That column = YOLO prediction indices (Mixture=0, NoGas=1, etc.)
-    # which differ from GAS_MAP (NoGas=0, Smoke=1, Mixture=2, Perfume=3).
-    # We ALWAYS derive gas_id from the label via GAS_MAP.
-    if "gas_id" in df.columns:
-        print("\n⚠️  NOTE: test_df has a 'gas_id' column but it is YOLO's")
-        print("   class index, NOT the semantic gas_id from GAS_MAP.")
-        print("   It will be IGNORED for correctness checking.")
-        print("   True gas_id is derived from label via GAS_MAP.")
-
-    all_logs          = []
-    episode_summaries = []
-
-    if label_col is None:
-        raise ValueError(
-            "No label column found. Cannot determine true gas_id. "
-            "Make sure test_df_processed.csv has a 'label' column."
-        )
-
-    available_labels = sorted(df[label_col].dropna().unique().tolist())
-    print(f"\nAvailable labels: {available_labels}")
-
-    # ── Validate all labels are in GAS_MAP ───────────────────────────
-    unknown = [l for l in available_labels if l not in GAS_MAP]
-    if unknown:
-        raise ValueError(
-            f"Labels not in GAS_MAP: {unknown}. "
-            f"GAS_MAP keys: {list(GAS_MAP.keys())}"
-        )
-
-    for label in available_labels:
-        df_label = df[df[label_col] == label].reset_index(drop=True)
-        steps_to_run = min(len(df_label), MAX_STEPS_PER_EPISODE)
-
-        # ── FIX: derive true gas_id from label via GAS_MAP ───────────
-        true_gas_id = get_true_gas_id(label)
-        expected    = get_expected_action(true_gas_id)
-        expected_str = " or ".join(f"{a}={ACTIONS[a]}" for a in expected)
-
-        print("\n" + "#" * 80)
-        print(f"VERIFY LABEL: {label}")
-        print(f"Rows: {len(df_label)}   Steps: {steps_to_run}")
-        print(f"True gas_id (from GAS_MAP): {true_gas_id}  →  Expected: {expected_str}")
-
-        results = []
-
-        for step in range(steps_to_run):
-            row   = df_label.iloc[step]
-            state = row[state_cols].values.astype(np.float32)
-
-            t0             = time.time()
-            action, q_values, q_std, policy_conf = decision.decide(
-                state=state, use_mc_dropout=USE_MC_DROPOUT
-            )
-            latency_ms = (time.time() - t0) * 1000
-
-            # ── Use true_gas_id (from GAS_MAP), NOT row["gas_id"] ────
-            is_correct = is_correct_action(true_gas_id, action)
-            reward     = compute_reward(
-                state=state,
-                action=int(action),
-                gas_id=true_gas_id,
-                anomaly=float(state[0]),
-            )
-
-            result = {
-                "true_label"       : label,
-                "true_gas_id"      : true_gas_id,
-                "step"             : step,
-                "action"           : int(action),
-                "action_name"      : ACTIONS[int(action)],
-                "is_correct"       : is_correct,
-                "expected_actions" : expected_str,
-                "reward"           : reward,
-                "policy_confidence": float(policy_conf),
-                "latency_ms"       : float(latency_ms),
-                "q0": float(q_values[0]), "q1": float(q_values[1]),
-                "q2": float(q_values[2]), "q3": float(q_values[3]),
-                "q4": float(q_values[4]),
-                "anomaly_used"     : float(state[0]),
-            }
-
-            results.append(result)
-            all_logs.append(result)
-
-        for r in results[:3]:
-            correct_str = (
-                "✅" if r.get("is_correct")
-                else ("❌" if r.get("is_correct") is False else "?")
-            )
-            print("=" * 60)
-            print(f"STEP: {r['step']}")
-            print(f"ACTION: {r['action_name']}  {correct_str}")
-            print(f"ANOMALY NORM: {r['anomaly_normalized']:.6f}")
-            print(f"CONF: {r['policy_confidence']:.4f}")
-            print(f"Q-VALUES: {np.round(r['q_values'], 4)}")
-
-            if "q_std" in r and r["q_std"] is not None:
-                print(f"Q-STD (MC Dropout): {np.round(r['q_std'], 6)}")
-
-            if ENABLE_EXPLANATIONS and r.get("explanation"):
-                print(f"EXPLANATION: {r['explanation']}")
-
-            if ENABLE_CRITIQUE and r.get("critique"):
-                print(f"CRITIQUE: {r['critique']}")
-
-            print(f"REWARD: {r['reward']:.4f}")
-            print(f"LATENCY: {r['latency']*1000:.3f} ms")
-
-        summary = summarize_verify_results(results, true_label=label)
-        episode_summaries.append(summary)
-
-        print(f"\n{'='*60}")
-        print(f"LABEL SUMMARY: {label}  (gas_id={true_gas_id})")
-        print(f"  Accuracy          : {summary['accuracy']}")
-        print(f"  Correct / Total   : {summary['correct_count']} / {summary['num_steps']}")
-        print(f"  Expected actions  : {summary['expected_actions']}")
-        print(f"  Dominant action   : {summary['dominant_action_name']}")
-        print(f"  Mean reward       : {summary['mean_reward']:.4f}")
-        print(f"  Mean confidence   : {summary['mean_policy_conf']:.4f}")
-        print(f"  Avg latency (ms)  : {summary['avg_latency_ms']:.3f}")
-
-    # ── Final overall summary ─────────────────────────────────────────
-    all_correct = sum(r["is_correct"] for r in all_logs)
-    all_total   = len(all_logs)
-    overall_acc = all_correct / all_total if all_total else 0.0
-
-    # Danger miss rate: Smoke (gas_id=1) and Mixture (gas_id=2) missed with action 0
-    danger_rows   = [r for r in all_logs if r["true_gas_id"] in {1, 2}]
-    danger_missed = sum(1 for r in danger_rows if r["action"] == 0)
-    danger_miss_rate = danger_missed / len(danger_rows) if danger_rows else 0.0
-
-    # False alarm rate: NoGas (gas_id=0) triggered with action >= 3
-    nogas_rows   = [r for r in all_logs if r["true_gas_id"] == 0]
-    false_alarms = sum(1 for r in nogas_rows if r["action"] >= 3)
-    false_alarm_rate = false_alarms / len(nogas_rows) if nogas_rows else 0.0
-
-    print("\n" + "=" * 80)
-    print("FINAL RESULTS")
-    print("=" * 80)
-    print(f"  Overall accuracy   : {overall_acc:.4f}  ({all_correct}/{all_total})")
-    print(f"  ⚠️  Danger miss rate  : {danger_miss_rate:.4f}  ({danger_missed}/{len(danger_rows)})")
-    print(f"  🔔  False alarm rate  : {false_alarm_rate:.4f}  ({false_alarms}/{len(nogas_rows)})")
-    print()
-
-    # Correct mapping check
-    print("  Label → gas_id mapping used:")
-    for lbl, gid in GAS_MAP.items():
-        correct_acts = get_expected_action(gid)
-        act_names = " or ".join(ACTIONS[a] for a in correct_acts)
-        print(f"    {lbl:10s} → gas_id={gid} → {act_names}")
-
-    print()
-    print(f"  {'Label':10s}  {'gas_id':>6}  {'Accuracy':>10}  {'Correct/Total':>15}  {'Dominant Action':>20}")
-    print(f"  {'-'*70}")
-    for s in episode_summaries:
-        lbl = str(s["true_label"])
-        gid = GAS_MAP.get(lbl, "?")
-        acc = str(s["accuracy"])
-        ct  = f"{s['correct_count']}/{s['num_steps']}"
-        dom = s["dominant_action_name"]
-        print(f"  {lbl:10s}  {gid:>6}  {acc:>10}  {ct:>15}  {dom:>20}")
-
-    df_log     = pd.DataFrame(all_logs)
-    df_summary = pd.DataFrame(episode_summaries)
-    df_log.to_csv(SAVE_LOG_PATH,     index=False)
-    df_summary.to_csv(SAVE_SUMMARY_PATH, index=False)
-    print(f"\nDetailed log  → {SAVE_LOG_PATH}")
-    print(f"Summary table → {SAVE_SUMMARY_PATH}")
-
-
-# =========================================================
-# MODE 2: LIVE STREAMING SIMULATION
-# =========================================================
-def run_live_mode():
-    print("\nRunning LIVE streaming mode...")
-
+def load_raw_dataframe():
     df = pd.read_csv(RAW_CSV_PATH)
-    print(f"Raw dataset loaded: {df.shape}")
 
     missing = [c for c in RAW_SENSOR_COLS if c not in df.columns]
     if missing:
-        raise ValueError(f"Raw CSV missing sensor columns: {missing}")
+        raise ValueError(f"Raw CSV missing required sensor columns: {missing}")
 
-    label_col = infer_label_column(df)
-    if label_col:
-        print(f"Label column: {label_col}")
-    else:
-        print("No label column — running blind (no correctness check).")
+    label_col = infer_column(df, LABEL_COL_CANDIDATES)
+    image_col = infer_column(df, IMAGE_NAME_COL_CANDIDATES)
 
-    all_logs          = []
-    episode_summaries = []
-    labels_to_run     = (
-        sorted(df[label_col].dropna().unique().tolist())
-        if label_col else [None]
+    if label_col is None:
+        raise ValueError(f"Could not find label column. Tried: {LABEL_COL_CANDIDATES}")
+    if image_col is None:
+        raise ValueError(f"Could not find image-name column. Tried: {IMAGE_NAME_COL_CANDIDATES}")
+
+    return df, label_col, image_col
+
+
+def pick_one_image_per_folder(df, label_col, image_col, image_base_path, window_size):
+    image_base = Path(image_base_path)
+    if not image_base.exists():
+        raise FileNotFoundError(f"Image base path does not exist: {image_base_path}")
+
+    selected = {}
+
+    for label in ["NoGas", "Smoke", "Mixture", "Perfume"]:
+        label_dir = image_base / label
+        if not label_dir.exists():
+            raise FileNotFoundError(f"Missing folder: {label_dir}")
+
+        images = sorted(
+            [
+                p for p in label_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in [".png", ".jpg", ".jpeg"]
+            ]
+        )
+
+        if not images:
+            raise FileNotFoundError(f"No images found in folder: {label_dir}")
+
+        chosen = None
+
+        for image_path in images:
+            image_name = image_path.stem
+
+            matches = df[
+                (df[label_col].astype(str) == str(label)) &
+                (df[image_col].astype(str) == str(image_name))
+            ]
+
+            if matches.empty:
+                continue
+
+            valid_matches = [idx for idx in matches.index.tolist() if idx >= window_size - 1]
+
+            if valid_matches:
+                chosen = image_path
+                break
+
+        if chosen is None:
+            raise ValueError(
+                f"Could not find any usable image in folder '{label}' with at least "
+                f"{window_size} rows of prior sensor history in the CSV."
+            )
+
+        selected[label] = chosen
+
+    return selected
+
+
+def find_matching_target_row(df, label_col, image_col, label, image_path, window_size):
+    image_name = image_path.stem
+
+    matches = df[
+        (df[label_col].astype(str) == str(label)) &
+        (df[image_col].astype(str) == str(image_name))
+    ].copy()
+
+    if matches.empty:
+        raise ValueError(
+            f"No CSV row found for label='{label}', image_name='{image_name}'."
+        )
+
+    valid_indices = [idx for idx in matches.index.tolist() if idx >= window_size - 1]
+
+    if not valid_indices:
+        raise ValueError(
+            f"CSV rows were found for label='{label}', image_name='{image_name}', "
+            f"but none have enough earlier history for a {window_size}-step window. "
+            f"Matching indices: {matches.index.tolist()}"
+        )
+
+    target_idx = valid_indices[0]
+    return target_idx, image_name
+
+
+def build_window_rows(df, target_idx, window_size=20):
+    start_idx = target_idx - window_size + 1
+    if start_idx < 0:
+        raise ValueError(
+            f"Not enough earlier rows to build a {window_size}-step window for target_idx={target_idx}."
+        )
+
+    window_df = df.iloc[start_idx:target_idx + 1].copy()
+
+    if len(window_df) != window_size:
+        raise ValueError(
+            f"Expected window size {window_size}, got {len(window_df)}."
+        )
+
+    return window_df
+
+
+def inspect_anomaly_context(result_row):
+    print("\nANOMALY DIAGNOSTIC")
+    print("-" * 40)
+    print(f"Label: {result_row['label']}")
+    print(f"Image: {result_row['image_name']}")
+    print(f"Anomaly raw: {result_row['anomaly_raw']}")
+    print(f"Anomaly normalized: {result_row['anomaly_normalized']}")
+    print(f"Final action: {result_row['action_name']}")
+    print(f"Policy confidence: {result_row['policy_confidence']:.4f}")
+    if result_row["q_values"] is not None:
+        print(f"Q-values: {np.round(np.array(result_row['q_values']), 4)}")
+    print("-" * 40)
+
+
+# =========================================================
+# FIX A — CORRECT ANOMALY SENSITIVITY TEST
+# =========================================================
+def test_anomaly_sensitivity(agent, sensor_window, normalized_anomaly_values):
+    """
+    Test DQN sensitivity by directly overriding the normalized anomaly slot
+    in the already-built state, instead of passing fake raw AE values into
+    build_state_from_window(...).
+    """
+    print("\nANOMALY SENSITIVITY TEST")
+    print("-" * 50)
+
+    base_raw_anomaly = float(agent.anomaly.compute(sensor_window[-1]))
+    base_state = agent.decision.build_state_from_window(
+        sensor_window=sensor_window,
+        anomaly_score_raw=base_raw_anomaly,
+    ).astype(np.float32)
+
+    for test_anom in normalized_anomaly_values:
+        state = base_state.copy()
+        state[0] = float(test_anom)
+
+        action, q_values, q_std, policy_conf = agent.decision.decide(
+            state=state,
+            use_mc_dropout=False,
+        )
+
+        print(
+            f"anomaly={state[0]:.4f} | "
+            f"action={action} ({agent.actions[int(action)]}) | "
+            f"conf={float(policy_conf):.4f} | "
+            f"q={np.round(q_values, 4)}"
+        )
+
+
+def run_single_folder_case(df, label_col, image_col, label, image_path):
+    target_idx, image_name = find_matching_target_row(
+        df=df,
+        label_col=label_col,
+        image_col=image_col,
+        label=label,
+        image_path=image_path,
+        window_size=WINDOW_SIZE,
     )
 
-    for label in labels_to_run:
-        df_label = (
-            df[df[label_col] == label].reset_index(drop=True)
-            if label is not None else df
+    window_df = build_window_rows(df, target_idx, window_size=WINDOW_SIZE)
+    true_gas_id = get_true_gas_id(label)
+
+    print("\n" + "#" * 90)
+    print(f"TESTING LABEL: {label}")
+    print(f"IMAGE: {image_path.name}")
+    print(f"CSV TARGET INDEX: {target_idx}")
+    print(f"WINDOW ROWS: {window_df.index.min()} -> {window_df.index.max()}")
+
+    agent.reset_window()
+    final_result = None
+
+    for i, (_, row) in enumerate(window_df.iterrows()):
+        sensor_array = row_to_sensor_array(row)
+        final_image_path = str(image_path) if i == (WINDOW_SIZE - 1) else None
+
+        result = agent.run_once(
+            sensor_row=sensor_array,
+            step=i,
+            gas_id=true_gas_id,
+            image_path=final_image_path,
+            use_mc_dropout=USE_MC_DROPOUT,
+            enable_explanations=ENABLE_EXPLANATIONS,
+            enable_critique=ENABLE_CRITIQUE,
         )
-        if len(df_label) < WINDOW_SIZE:
-            print(f"Skipping {label}: only {len(df_label)} rows")
-            continue
+        final_result = result
 
-        # ── FIX: derive gas_id from label via GAS_MAP ─────────────────
-        true_gas_id = get_true_gas_id(label) if label in GAS_MAP else None
+    if final_result is None or not final_result.get("ready", False):
+        raise RuntimeError(f"Agent did not produce a ready final result for {label}.")
 
-        print("\n" + "#" * 80)
-        print(f"LIVE LABEL: {label}  |  gas_id={true_gas_id}  |  Rows: {len(df_label)}")
+    if RUN_ANOMALY_SENSITIVITY_TEST:
+        sensor_window_array = agent.get_sensor_window()
+        test_anomaly_values = [0.0, 0.25, 0.50, 0.75, 1.0]
+        test_anomaly_sensitivity(agent, sensor_window_array, test_anomaly_values)
 
-        agent.reset_window()
-        results      = []
-        steps_to_run = min(len(df_label), MAX_STEPS_PER_EPISODE)
+    return {
+        "label": label,
+        "image_name": image_name,
+        "image_path": str(image_path),
+        "target_idx": int(target_idx),
 
-        for step in range(steps_to_run):
-            row          = df_label.iloc[step]
-            sensor_array = row_to_sensor_array(row)
+        "action_raw": final_result.get("action_raw"),
+        "action_raw_name": final_result.get("action_raw_name"),
 
-            result = agent.run_once(
-                sensor_row=sensor_array,
-                step=step,
-                gas_id=true_gas_id,   # true gas_id from GAS_MAP
-                use_mc_dropout=USE_MC_DROPOUT,
-                enable_explanations=ENABLE_EXPLANATIONS,
-                enable_critique=ENABLE_CRITIQUE,
-            )
-            results.append(result)
+        "action_after_safety": final_result.get("action_after_safety"),
+        "action_after_safety_name": final_result.get("action_after_safety_name"),
 
-        ready = [r for r in results if r.get("ready", False)]
+        "action": final_result.get("action"),
+        "action_name": final_result.get("action_name"),
 
-        for r in ready[:3]:
-            correct_str = (
-                "✅" if r.get("is_correct")
-                else ("❌" if r.get("is_correct") is False else "?")
-            )
-            print("=" * 60)
-            print(f"STEP: {r['step']}")
-            print(f"ACTION: {r['action_name']}  {correct_str}")
-            print(f"ANOMALY NORM: {r['anomaly_normalized']:.6f}")
-            print(f"CONF: {r['policy_confidence']:.4f}")
-            print(f"Q-VALUES: {np.round(r['q_values'], 4)}")
-            if "q_std" in r and r["q_std"] is not None:
-                print(f"Q-STD (MC Dropout): {np.round(r['q_std'], 6)}")
+        "gas_id": final_result.get("gas_id"),
+        "is_correct": final_result.get("is_correct"),
+        "expected_actions": final_result.get("expected_actions"),
 
-            if ENABLE_EXPLANATIONS and r.get("explanation"):
-                print(f"EXPLANATION: {r['explanation']}")
+        "anomaly_raw": final_result.get("anomaly_raw"),
+        "anomaly_normalized": final_result.get("anomaly_normalized"),
+        "policy_confidence": final_result.get("policy_confidence"),
+        "reward": final_result.get("reward"),
+        "latency_ms": float(final_result.get("latency", 0.0) * 1000.0),
 
-            if ENABLE_CRITIQUE and r.get("critique"):
-                print(f"CRITIQUE: {r['critique']}")
-            print(f"REWARD: {r['reward']:.4f}")
-            print(f"LATENCY: {r['latency']*1000:.3f} ms")
+        "yolo_class_id": final_result.get("yolo_class_id"),
+        "yolo_class_label": final_result.get("yolo_class_label"),
+        "yolo_confidence": final_result.get("yolo_confidence"),
+        "yolo_semantic_gas_id": final_result.get("yolo_semantic_gas_id"),
+        "yolo_gas_name": final_result.get("yolo_gas_name"),
+        "vision_action_support": final_result.get("vision_action_support"),
+        "vision_danger_flag": final_result.get("vision_danger_flag"),
+        "vision_reason": final_result.get("vision_reason"),
+        "vision_error": final_result.get("vision_error"),
 
-        summary = summarize_live_results(results, true_label=label)
-        episode_summaries.append(summary)
-        print("\nLive Summary:", summary)
+        "safety_changed_action": final_result.get("safety_changed_action"),
+        "vision_escalated_action": final_result.get("vision_escalated_action"),
 
-        for r in ready:
-            all_logs.append({
-                "true_label"       : label,
-                "true_gas_id"      : true_gas_id,
-                "step"             : r["step"],
-                "action_raw"       : r["action_raw"],
-                "action_raw_name"  : r["action_raw_name"],
-                "action"           : r["action"],
-                "action_name"      : r["action_name"],
-                "is_correct"       : r.get("is_correct"),
-                "anomaly_raw"      : r["anomaly_raw"],
-                "anomaly_normalized": r["anomaly_normalized"],
-                "policy_confidence": r["policy_confidence"],
-                "reward"           : r["reward"],
-                "latency_ms"       : r["latency"] * 1000,
-                "q0": r["q_values"][0], "q1": r["q_values"][1],
-                "q2": r["q_values"][2], "q3": r["q_values"][3],
-                "q4": r["q_values"][4],
-                "q_std": r.get("q_std"),
-                "explanation": r.get("explanation"),
-                "critique": r.get("critique"),
-            })
+        "q_values": final_result.get("q_values"),
+        "explanation": final_result.get("explanation"),
+        "critique": final_result.get("critique"),
+    }
 
-    pd.DataFrame(all_logs).to_csv(SAVE_LOG_PATH,     index=False)
-    pd.DataFrame(episode_summaries).to_csv(SAVE_SUMMARY_PATH, index=False)
+
+def print_case_result(r):
+    correct_str = "✅" if r["is_correct"] else "❌"
+
+    print("=" * 70)
+    print(f"LABEL: {r['label']}  {correct_str}")
+    print(f"IMAGE: {r['image_name']}")
+    print(f"ACTION RAW: {r['action_raw_name']}")
+    print(f"ACTION AFTER SAFETY: {r['action_after_safety_name']}")
+    print(f"FINAL ACTION: {r['action_name']}")
+    print(f"SAFETY CHANGED ACTION: {r['safety_changed_action']}")
+    print(f"VISION ESCALATED ACTION: {r['vision_escalated_action']}")
+    print(f"ANOMALY NORM: {r['anomaly_normalized']:.6f}")
+    print(f"POLICY CONF: {r['policy_confidence']:.4f}")
+
+    if r["q_values"] is not None:
+        print(f"Q-VALUES: {np.round(np.array(r['q_values']), 4)}")
+
+    if r["yolo_class_id"] is not None:
+        print(
+            f"YOLO -> raw_idx={r['yolo_class_id']} | "
+            f"raw_label={r['yolo_class_label']} | "
+            f"conf={r['yolo_confidence']:.4f} | "
+            f"mapped_gas_id={r['yolo_semantic_gas_id']} ({r['yolo_gas_name']})"
+        )
+        print(f"VISION NOTE: {r['vision_reason']}")
+    elif r["vision_error"]:
+        print(f"VISION ERROR: {r['vision_error']}")
+
+    print(f"REWARD: {r['reward']:.4f}")
+    print(f"LATENCY: {r['latency_ms']:.3f} ms")
+
+    if ENABLE_EXPLANATIONS and r["explanation"]:
+        print(f"EXPLANATION:\n{r['explanation']}")
+    if ENABLE_CRITIQUE and r["critique"]:
+        print(f"CRITIQUE:\n{r['critique']}")
+
+    if RUN_ANOMALY_DIAGNOSTICS:
+        inspect_anomaly_context(r)
+
+
+def run_folder_live_test():
+    print("\nRunning folder-driven live test...")
+
+    df, label_col, image_col = load_raw_dataframe()
+
+    print(f"Using label column: {label_col}")
+    print(f"Using image-name column: {image_col}")
+
+    chosen_images = pick_one_image_per_folder(
+        df=df,
+        label_col=label_col,
+        image_col=image_col,
+        image_base_path=IMAGE_BASE_PATH,
+        window_size=WINDOW_SIZE,
+    )
+
+    print("\nSelected images for testing:")
+    for lbl, img in chosen_images.items():
+        print(f"  {lbl}: {img.name}")
+
+    all_results = []
+
+    for label, image_path in chosen_images.items():
+        result = run_single_folder_case(
+            df=df,
+            label_col=label_col,
+            image_col=image_col,
+            label=label,
+            image_path=image_path,
+        )
+        all_results.append(result)
+        print_case_result(result)
+
+    log_df = pd.DataFrame(all_results)
+    log_df.to_csv(SAVE_LOG_PATH, index=False)
+
+    summary_rows = []
+    for r in all_results:
+        summary_rows.append({
+            "label": r["label"],
+            "image_name": r["image_name"],
+            "target_idx": r["target_idx"],
+            "final_action": r["action"],
+            "final_action_name": r["action_name"],
+            "is_correct": r["is_correct"],
+            "policy_confidence": r["policy_confidence"],
+            "reward": r["reward"],
+            "yolo_class_id": r["yolo_class_id"],
+            "yolo_class_label": r["yolo_class_label"],
+            "yolo_confidence": r["yolo_confidence"],
+            "yolo_semantic_gas_id": r["yolo_semantic_gas_id"],
+            "yolo_gas_name": r["yolo_gas_name"],
+            "vision_danger_flag": r["vision_danger_flag"],
+            "safety_changed_action": r["safety_changed_action"],
+            "vision_escalated_action": r["vision_escalated_action"],
+        })
+
+    summary_df = pd.DataFrame(summary_rows)
+    summary_df.to_csv(SAVE_SUMMARY_PATH, index=False)
+
+    print("\n" + "=" * 90)
+    print("FINAL FOLDER TEST SUMMARY")
+    print("=" * 90)
+    print(summary_df.to_string(index=False))
     print(f"\nDetailed log  → {SAVE_LOG_PATH}")
     print(f"Summary table → {SAVE_SUMMARY_PATH}")
 
 
 if __name__ == "__main__":
-    if RUN_MODE == "verify":
-        run_verify_mode()
-    elif RUN_MODE == "live":
-        run_live_mode()
+    if RUN_MODE == "folder_live_test":
+        run_folder_live_test()
     else:
-        raise ValueError("RUN_MODE must be 'verify' or 'live'")
+        raise ValueError("RUN_MODE must be 'folder_live_test'")
