@@ -548,16 +548,6 @@ This makes the language layer safer, even though it is still not perfect.
 
 ---
 
-## Current Limitations
-
-- not a fully distributed multi-agent architecture
-- YOLO is not yet part of the DQN state itself
-- explanation and critique quality still depend on strong prompt and validator design
-- latency is still high when explanation and critique are enabled together
-- some decisions remain counterintuitive because anomaly is only one part of the full state
-
----
-
 ## Repository Structure
 
 ```text
