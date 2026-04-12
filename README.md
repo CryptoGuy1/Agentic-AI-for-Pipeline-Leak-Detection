@@ -367,7 +367,6 @@ The vision branch is currently used for:
 
 The vision output is **not** currently part of the 22-dimensional DQN state.
 
-So the visual branch is a **post-decision sub-agent**, not a co-equal state input branch.
 
 ### Current Escalation Logic
 
