@@ -43,8 +43,6 @@ It is **agentic** because it:
 - generates explanations and critiques
 - logs decisions for traceability
 
-It is **not** a fully distributed multi-agent swarm.
-
 The system is organized around one main orchestrator (`MultimodalAgent`) and several specialized sub-agents:
 
 - **Anomaly Agent** → implemented as `AnomalyTool` for LSTM autoencoder-based anomaly estimation
