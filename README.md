@@ -1,29 +1,63 @@
-# GasSafe AI — Multimodal Autonomous Gas Detection System
+# GasSafe AI — Multimodal Agentic Gas Safety System
 
-> **Production-grade autonomous safety agent for gas station monitoring.**  
-> Dueling Double DQN · LSTM Autoencoder Anomaly Detection · YOLOv8 · Prioritized Experience Replay · Streamlit Dashboard
+> **Agentic multimodal safety system for gas monitoring and action selection.**  
+> Dueling Deep Q-Network · LSTM Autoencoder Anomaly Detection · YOLOv8 Verification · Safety Guardrails · Explanation & Critique Layer
 
 ---
 
 ## What This System Does
 
-GasSafe AI is a multimodal reinforcement learning safety system that continuously monitors a gas station environment using two sensor modalities — a 7-channel MQ gas sensor array and a thermal/optical camera — and autonomously selects the correct safety response in real time.
+GasSafe AI is a multimodal, agentic industrial gas safety system that continuously monitors an environment using two input modalities:
 
-The system detects four gas conditions and responds with one of five calibrated safety actions. Validated results on a leakage-safe block-wise holdout test set:
+- a **7-channel MQ gas sensor array**
+- a **thermal image branch**
 
-- **92.55% overall decision accuracy** (1,181 / 1,276 test samples)
-- **0.0% danger miss rate** — no Smoke or Mixture event was silently ignored
-- **0.0% false alarm rate** — no unnecessary emergency response on clean air
-- **Sub-millisecond inference** — ~0.46ms mean latency on CPU
+The system does not only classify gas conditions. It performs an **agentic safety workflow**:
+
+1. reads recent sensor behavior
+2. estimates anomaly
+3. builds a structured temporal state
+4. chooses a safety action using reinforcement learning
+5. applies hard safety rules
+6. verifies the decision with visual evidence
+7. generates explanation and critique outputs
+8. logs the result for operator review
+
+The current system detects four gas conditions and selects one of five calibrated safety actions.
 
 ---
 
-## Core AI Pipeline
+## What This Project Is
 
+This project is best described as:
 
-If you want a cleaner and more professional README version, use this instead:
+> **a central agentic multimodal safety system with specialized functional sub-agents**
 
-```markdown
+It is **agentic** because it:
+
+- perceives the environment from multiple inputs
+- builds an internal state representation
+- chooses actions autonomously
+- applies safety guardrails
+- verifies actions with visual evidence
+- generates explanations and critiques
+- logs decisions for traceability
+
+It is **not** a fully distributed multi-agent swarm.
+
+The system is organized around one main orchestrator (`MultimodalAgent`) and several specialized sub-agents:
+
+- **Anomaly Agent** → implemented as `AnomalyTool` for LSTM autoencoder-based anomaly estimation
+- **Decision Agent** → implemented as `DecisionTool` for Dueling Deep Q-Network action selection
+- **Vision Agent** → implemented as `VisionTool` for YOLO-based visual gas classification and verification
+- **Explanation Agent** → implemented as `ExplanationTool` for operator-facing explanation generation
+- **Critique Agent** → implemented through the explanation/critique pipeline for decision quality auditing
+- **Memory Agent / Logging Layer** → maintains structured output history and diagnostics
+
+So conceptually, these are described as **sub-agents**, while in code they are **implemented as tools/modules coordinated by one central agent**.
+
+---
+
 ## System Architecture
 
 ```text
@@ -31,404 +65,615 @@ If you want a cleaner and more professional README version, use this instead:
                  │                                               │
                  ▼                                               ▼
    ┌───────────────────────────┐                  ┌───────────────────────────┐
-   │   YOLOv8 Image Classifier │                  │   LSTM Autoencoder        │
-   │   - gas class             │                  │   - anomaly score         │
-   │   - confidence score      │                  │   - abnormal pattern flag │
-   └───────────────────────────┘                  └───────────────────────────┘
-                 │                                               │
-                 └───────────────────────┬───────────────────────┘
-                                         │
-                                         ▼
-                    ┌─────────────────────────────────────────┐
-                    │        Multimodal State Builder         │
-                    │  Combines:                              │
-                    │  - gas class ID                         │
-                    │  - classification confidence            │
-                    │  - anomaly score                        │
-                    │  - sensor features                      │
-                    │  - optional temperature/humidity        │
-                    └─────────────────────────────────────────┘
-                                         │
-                                         ▼
-                    ┌─────────────────────────────────────────┐
-                    │      Reinforcement Learning Agent       │
-                    │               DQN Policy                │
-                    │                                         │
-                    │  Actions:                               │
-                    │  0 → Monitor                            │
-                    │  1 → Increase Sampling                  │
-                    │  2 → Request Verification               │
-                    │  3 → Raise Alarm                        │
-                    │  4 → Emergency Shutdown                 │
-                    └─────────────────────────────────────────┘
-                                         │
-                                         ▼
-                    ┌─────────────────────────────────────────┐
-                    │      Explainability & Safety Layer      │
-                    │  - action justification                 │
-                    │  - confidence warning                   │
-                    │  - risk interpretation                  │
-                    │  - operator-facing reasoning            │
-                    └─────────────────────────────────────────┘
-                                         │
-                                         ▼
-                    ┌─────────────────────────────────────────┐
-                    │       Streamlit Control Dashboard       │
-                    │  - live predictions                     │
-                    │  - threat level                         │
-                    │  - alerts and incidents                 │
-                    │  - explanation console                  │
-                    └─────────────────────────────────────────┘
+   │        Vision Agent       │                  │       Sliding Window      │
+   │      (YOLOv8 Classifier)  │                  │      20-step history      │
+   │   - visual gas class      │                  │   - current / delta / std │
+   │   - visual confidence     │                  └──────────────┬────────────┘
+   └──────────────┬────────────┘                                 │
+                  │                                              ▼
+                  │                           ┌───────────────────────────────┐
+                  │                           │        Anomaly Agent          │
+                  │                           │    (LSTM Autoencoder)         │
+                  │                           │  - raw anomaly score          │
+                  │                           │  - normalized anomaly         │
+                  │                           └──────────────┬────────────────┘
+                  │                                          │
+                  └───────────────────────┬──────────────────┘
+                                          ▼
+                    ┌──────────────────────────────────────────────┐
+                    │              State Builder                   │
+                    │      22-feature RL state construction        │
+                    │  [ anomaly | current | delta | std ]         │
+                    └──────────────────────┬───────────────────────┘
+                                           ▼
+                    ┌──────────────────────────────────────────────┐
+                    │              Decision Agent                  │
+                    │       Dueling Deep Q-Network Policy          │
+                    │                                              │
+                    │  Actions:                                    │
+                    │  0 → Monitor                                 │
+                    │  1 → Increase Sampling                       │
+                    │  2 → Request Verification                    │
+                    │  3 → Raise Alert                             │
+                    │  4 → Emergency Shutdown                      │
+                    └──────────────────────┬───────────────────────┘
+                                           ▼
+                    ┌──────────────────────────────────────────────┐
+                    │         Safety Override / Guardrails         │
+                    │  - deterministic safety escalation rules     │
+                    └──────────────────────┬───────────────────────┘
+                                           ▼
+                    ┌──────────────────────────────────────────────┐
+                    │      Vision Verification / Escalation        │
+                    │  - confirm or challenge sensor decision      │
+                    │  - escalate on strong dangerous evidence     │
+                    └──────────────────────┬───────────────────────┘
+                                           ▼
+                    ┌──────────────────────────────────────────────┐
+                    │    Explanation Agent + Critique Agent        │
+                    │  - action interpretation                     │
+                    │  - confidence / robustness audit             │
+                    │  - operator-facing reasoning                 │
+                    └──────────────────────┬───────────────────────┘
+                                           ▼
+                    ┌──────────────────────────────────────────────┐
+                    │         Final Logged Safety Output           │
+                    │  - final action                              │
+                    │  - Q-values / confidence                     │
+                    │  - anomaly / vision result                   │
+                    │  - explanation / critique                    │
+                    └──────────────────────────────────────────────┘
+```
 
 ---
 
-## Gas Classification and Action Mapping
+## Current Action Space
 
-This is the canonical ground truth for the entire system. Every reward function, evaluation metric, and explanation uses exactly these mappings.
+The Deep Q-Network chooses one of **five safety actions**:
+
+| Action ID | Action |
+|-----------|--------|
+| 0 | Monitor |
+| 1 | Increase Sampling |
+| 2 | Request Verification |
+| 3 | Raise Alert |
+| 4 | Emergency Shutdown |
+
+Semantic gas mapping used throughout the project:
+
+- **NoGas → gas_id 0 → Monitor**
+- **Smoke → gas_id 1 → Raise Alert**
+- **Mixture → gas_id 2 → Emergency Shutdown**
+- **Perfume → gas_id 3 → Increase Sampling / Request Verification**
+
+---
+
+## Canonical Gas Mapping
+
+This is the canonical ground truth for the system. Reward logic, correctness checks, evaluation, and explanation all use this semantic mapping.
 
 | Gas Class | `gas_id` | Hazard Level | Correct Action | Action ID |
 |-----------|----------|--------------|----------------|-----------|
 | NoGas | 0 | Safe | Monitor | `0` |
-| Smoke | 1 | **DANGER** | Raise Alarm | `3` |
-| Mixture | 2 | **DANGER** | Emergency Shutdown | `4` |
-| Perfume | 3 | Low risk VOC | Increase Sampling or Request Verification | `1` or `2` |
+| Smoke | 1 | **Danger** | Raise Alert | `3` |
+| Mixture | 2 | **Danger** | Emergency Shutdown | `4` |
+| Perfume | 3 | Low-risk VOC | Increase Sampling or Request Verification | `1` or `2` |
 
-> **Critical implementation note:** `gas_id` is always derived from the text label via `GAS_MAP`, never from YOLOv8's internal class index. YOLO's class ordering (`Mixture=0, NoGas=1, Perfume=2, Smoke=3`) differs from `GAS_MAP` and must never be used as ground-truth `gas_id`. This was a major bug that caused the entire policy to be semantically inverted before the fix.
+### Critical Implementation Note
+
+Canonical gas meaning is always derived from the text label using:
 
 ```python
-GAS_MAP = {"NoGas": 0, "Smoke": 1, "Mixture": 2, "Perfume": 3}  # canonical — never change
+GAS_MAP = {"NoGas": 0, "Smoke": 1, "Mixture": 2, "Perfume": 3}
 ```
+
+YOLO's internal class index order is **not** the same as this semantic gas mapping.
+
+YOLO internal order in the current project is:
+
+- `Mixture = 0`
+- `NoGas = 1`
+- `Perfume = 2`
+- `Smoke = 3`
+
+That means:
+
+> YOLO class index must never be treated as the semantic `gas_id` directly.
+
+The Vision Agent must convert:
+
+- raw YOLO class index
+- to text label
+- then to canonical `gas_id` through `GAS_MAP`
 
 ---
 
-## Model Architecture — Dueling Double DQN
+## Core AI Pipeline
 
-```
+### Sensor Branch
+
+The sensor branch is the main decision-making path.
+
+It takes sequential gas sensor values and turns them into a structured temporal RL state.
+
+### Vision Branch
+
+The vision branch is currently a **verification / escalation branch**, not the primary policy driver.
+
+That means:
+
+- the Deep Q-Network makes the main decision from the engineered sensor/anomaly state
+- the Vision Agent checks whether visual evidence supports or contradicts that decision
+- dangerous high-confidence visual evidence can escalate the final action
+
+### Explanation / Critique Branch
+
+After the final action is chosen, the system generates:
+
+- a detailed explanation of what happened
+- a critique of how strong or fragile the decision is
+
+---
+
+## Model Architecture — Dueling Deep Q-Network
+
+The current Decision Agent is a Dueling DQN operating on a **22-feature state vector**.
+
+Conceptually:
+
+```text
 Input: 22-feature state vector
   │
-  ├── Linear(22 → 256) → LayerNorm → ReLU → Dropout(0.15)
-  ├── Linear(256 → 256) → LayerNorm → ReLU → Dropout(0.15)
-  └── Linear(256 → 128) → LayerNorm → ReLU
-                   │
-       ┌───────────┴───────────┐
-       │                       │
-  Value Stream             Advantage Stream
-  Linear(128→64)→ReLU      Linear(128→64)→ReLU
-  Linear(64→1) = V(s)      Linear(64→5) = A(s,a)
-       │                       │
-       └───────────┬───────────┘
-                   │
-        Q(s,a) = V(s) + [A(s,a) − mean_a A(s,a')]
+  ├── hidden layers
+  │
+  ├── Value stream        -> V(s)
+  └── Advantage stream    -> A(s, a)
+            │
+            ▼
+Q(s, a) = V(s) + [A(s, a) − mean_a A(s, a')]
 ```
 
-**Training components:**
-- Double DQN: online network selects action, target network evaluates it
-- Prioritized Experience Replay (SumTree, iterative, no Python recursion)
-- N-step returns (N=3) for faster credit assignment
-- Soft target network updates (tau=0.005)
-- Orthogonal weight initialization with small output gain (0.01)
-- LayerNorm instead of BatchNorm (works with batch_size=1 at inference)
+### Current Training Components
+
+- Dueling DQN policy structure
+- target network
+- prioritized experience replay
+- n-step returns
+- epsilon-greedy exploration
+- soft target network updates
+- safety-oriented reward shaping
+- MC dropout support during inference through the decision pipeline
+
+### What the DQN Is Learning
+
+The DQN is learning:
+
+> **Given the current 22-dimensional state, which of the 5 safety actions gives the best expected safety outcome?**
 
 ---
 
 ## The 22-Feature State Vector
 
+The current reinforcement learning state is:
+
 ```python
 state = [
-    anomaly,                         # normalized LSTM AE reconstruction error
-    MQ2, MQ3, MQ5, MQ6, MQ7, MQ8, MQ135,   # current sensor readings
-    dMQ2, dMQ3, dMQ5, dMQ6, dMQ7, dMQ8, dMQ135,  # delta: last - first over window
-    sMQ2, sMQ3, sMQ5, sMQ6, sMQ7, sMQ8, sMQ135,  # std over 20-step window
+    anomaly,                                   # normalized anomaly score
+    MQ2, MQ3, MQ5, MQ6, MQ7, MQ8, MQ135,      # current sensor readings
+    dMQ2, dMQ3, dMQ5, dMQ6, dMQ7, dMQ8, dMQ135,  # delta over window
+    sMQ2, sMQ3, sMQ5, sMQ6, sMQ7, sMQ8, sMQ135,  # std over window
 ]
 ```
 
-The delta and std features are critical — they capture whether gas levels are **rising** (alarming) or **falling** (recovering). This is especially important for Mixture gas, which produces a low anomaly score because the LSTM AE reconstructs it well, but has distinctive temporal sensor patterns in the delta/std features.
+Total:
+
+- 1 anomaly feature
+- 7 current sensor features
+- 7 delta features
+- 7 standard deviation features
+
+**State dimension = 22**
+
+### Why This Matters
+
+The DQN is **not** making decisions from:
+
+- image features directly
+- anomaly alone
+
+It is making decisions from the **full temporal engineered sensor state**.
+
+This is why some cases can still be correctly classified even when anomaly alone looks counterintuitive.
 
 ---
 
-## Data Split — Block-Wise Holdout with Boundary Trim
+## Sliding Window
 
-### Why not a random split?
+The system uses a **20-step sliding window** over the sensor stream.
 
-Overlapping 20-step windows mean window `i` shares 19 raw rows with window `i+1`. A random 80/20 split puts approximately 24,000 overlapping window-pairs across train and test, artificially inflating test accuracy by ~6%.
+### What the Window Captures
 
-### Why not `iloc[:80%]`?
+A single sensor row only tells the model what is happening now.
 
-The raw CSV is arranged in sequential gas blocks. Index 5,104 falls inside the Perfume block, making the test set 100% Perfume — a completely invalid benchmark.
+The sliding window tells the model:
 
-### The correct approach
+- what the sensors look like now
+- how they changed over time
+- how stable or unstable they were across the recent interval
 
+### Window-Derived Features
+
+From each 20-step window, the system computes:
+
+- **current** = the last row of the window
+- **delta** = last row minus first row
+- **std** = standard deviation of each sensor over the 20 rows
+
+This temporal feature engineering is critical because it allows the DQN to detect patterns such as:
+
+- rising concentration
+- falling concentration
+- stable background
+- unstable or oscillating conditions
+
+---
+
+## Anomaly Agent — LSTM Autoencoder
+
+The Anomaly Agent uses an LSTM autoencoder to estimate how unusual the current sensor pattern is.
+
+### What It Does
+
+- reconstructs the sensor reading
+- measures reconstruction error
+- converts that error into an anomaly score
+
+### Outputs
+
+- **raw anomaly**
+- **normalized anomaly**
+
+The normalized anomaly becomes the first feature in the 22-dimensional DQN state.
+
+### Important Operational Detail
+
+High anomaly does **not** automatically mean dangerous gas.
+
+The anomaly score is just one input to the DQN.
+
+The final action depends on the full state:
+
+- anomaly
+- current sensor values
+- deltas
+- standard deviations
+
+That is why the model can still choose a mild action in some high-anomaly cases if the rest of the state indicates a non-hazardous pattern.
+
+---
+
+## Vision Agent — YOLOv8 Verification Branch
+
+The Vision Agent uses YOLO classification on the thermal image.
+
+### Current Role
+
+The vision branch is currently used for:
+
+- visual class prediction
+- visual confidence estimation
+- post-policy verification
+- post-policy escalation
+
+### What It Does Not Currently Do
+
+The vision output is **not** currently part of the 22-dimensional DQN state.
+
+So the visual branch is a **post-decision sub-agent**, not a co-equal state input branch.
+
+### Current Escalation Logic
+
+- low-confidence visual results are logged but not trusted strongly
+- strong Smoke evidence can escalate to at least **Raise Alert**
+- strong Mixture evidence can escalate to **Emergency Shutdown**
+- NoGas / Perfume do not currently downgrade strong safety actions in Stage 1
+
+---
+
+## MC Dropout
+
+The current decision pipeline supports **MC Dropout**.
+
+### What MC Dropout Means
+
+Instead of doing one deterministic forward pass, the decision model can perform multiple stochastic forward passes with dropout active at inference time.
+
+This gives:
+
+- slightly different Q-values on each pass
+- mean Q-values
+- Q-value spread / standard deviation
+- a policy confidence estimate
+
+### Why It Matters
+
+MC Dropout gives a practical uncertainty estimate:
+
+- **low spread** = stable decision
+- **high spread** = fragile decision
+
+This helps the critique layer judge whether a decision is:
+
+- robust
+- moderately robust
+- fragile
+
+### Important Note
+
+MC Dropout improves interpretability and uncertainty awareness, but it also increases runtime.
+
+---
+
+## Data Split and Training Logic
+
+The reinforcement learning policy was trained offline from processed sliding-window samples.
+
+### Stage 1 — Build Windows from Raw Sequential CSV
+
+The raw gas sensor CSV is segmented into overlapping **20-step windows**.
+
+Each window becomes one training sample.
+
+### Stage 2 — Build Temporal Features
+
+For each window:
+
+- current sensor row is extracted
+- delta across the window is computed
+- standard deviation across the window is computed
+- anomaly score is computed
+
+### Stage 3 — Normalize Anomaly
+
+Anomaly is normalized using train-only statistics so that deployment uses the same scale seen during training.
+
+### Stage 4 — Construct the RL State
+
+The final training state is:
+
+```text
+[anomaly | current | delta | std]
 ```
-For each gas class block:
-  [BOUNDARY_TRIM=20][══════ TRAIN ══════][GAP=20][═════ TEST ═════]
 
-NoGas:   [trim=20][train=1,224][gap=20][test=316]
-Smoke:   [trim=20][train=1,240][gap=20][test=320]
-Mixture: [trim=20][train=1,240][gap=20][test=320]
-Perfume: [trim=20][train=1,240][gap=20][test=320]
-─────────────────────────────────────────────────────────
-         Total train: 4,944   |   Total test: 1,276
-         Raw-row overlap: 0 rows (mathematically verified)
+State dimension = **22**
+
+### Stage 5 — Define the Reward Policy
+
+The reward function encodes the operational safety policy:
+
+- NoGas should favor **Monitor**
+- Smoke should favor **Raise Alert**
+- Mixture should favor **Emergency Shutdown**
+- Perfume should favor **Increase Sampling** or **Request Verification**
+
+Dangerous under-reactions are penalized more strongly than mild mistakes.
+
+### Stage 6 — Train DQN Offline
+
+The environment iterates through processed training samples.
+
+At each step:
+
+- current state is given to the DQN
+- an action is selected
+- reward is computed from the ground-truth gas class
+- next state is returned
+
+This trains the DQN to map structured temporal states to calibrated safety actions.
+
+---
+
+## Folder-Driven Live Testing Workflow
+
+The current testing workflow is folder-driven and uses one image from each class folder:
+
+- NoGas
+- Smoke
+- Mixture
+- Perfume
+
+For each chosen image, the system:
+
+1. finds the matching CSV row
+2. builds the 20-step sensor window ending at that row
+3. computes anomaly
+4. constructs the 22-dimensional state
+5. runs the DQN
+6. applies safety override
+7. runs YOLO on the image
+8. applies visual verification / escalation
+9. generates explanation and critique
+10. logs the result
+
+This makes the live verification path consistent with the trained state representation.
+
+---
+
+## Explanation Agent and Critique Agent
+
+The explanation and critique layers are operator-facing reasoning layers.
+
+### Explanation Agent
+
+The Explanation Agent explains:
+
+- what the sensor state suggested
+- what the DQN preferred
+- whether safety override changed the action
+- what the vision branch suggested
+- whether the branches agreed
+- why the final action was selected
+
+### Critique Agent
+
+The Critique Agent audits:
+
+- policy confidence
+- Q-gap strength
+- decision robustness
+- anomaly/action consistency
+- vision agreement strength
+- operational trustworthiness
+
+### Current Implementation Detail
+
+The explanation and critique layers use:
+
+- precomputed interpretation labels from Python
+- prompt constraints
+- contradiction validators
+- structured fallback text if the free-form output contradicts the structured evidence
+
+This makes the language layer safer, even though it is still not perfect.
+
+---
+
+## Current Strengths
+
+- clear 22-feature RL state design
+- anomaly-aware temporal reasoning
+- post-policy visual verification
+- deterministic safety guardrails
+- centralized agentic orchestration
+- explanation and critique outputs
+- strong logging and debugging visibility
+- semantic gas mapping is now explicit and safer
+
+---
+
+## Current Limitations
+
+- not a fully distributed multi-agent architecture
+- YOLO is not yet part of the DQN state itself
+- explanation and critique quality still depend on strong prompt and validator design
+- latency is still high when explanation and critique are enabled together
+- some decisions remain counterintuitive because anomaly is only one part of the full state
+
+---
+
+## Repository Structure
+
+```text
+src/
+├── agent/
+│   ├── agent_core.py
+│   ├── safety.py
+│   ├── reward_system.py
+│   ├── memory.py
+│   ├── goal_manager.py
+│   ├── critic.py
+│   └── metrics_logger.py
+│
+├── tools/
+│   ├── anomaly_tool.py
+│   ├── decision_tool.py
+│   ├── vision_tool.py
+│   └── explanation_tool.py
+│
+main.py
+app.py
+models/
+├── DeepQnet.pth
+├── lstm_autoencoder_weights.pth
+└── yolov8_gas_classifier.pt
 ```
-
-**Why `BOUNDARY_TRIM=20`?** Without trimming, the start of each class block shares raw rows with the end of the previous class's test windows (57 rows total across 3 boundaries). Trimming 20 windows from each block's start eliminates all cross-class boundary contamination.
-
----
-
-## Training Configuration
-
-| Parameter | Value |
-|-----------|-------|
-| Episodes | 200 |
-| Training samples | 4,944 |
-| Test samples | 1,276 |
-| State dimensions | 22 |
-| Actions | 5 |
-| Optimizer | Adam lr=2e-4 |
-| Gamma | 0.99 |
-| N-step | 3 |
-| Batch size | 128 |
-| Buffer | 100,000 |
-| Learn every | 4 steps |
-| Tau (soft update) | 0.005 |
-| Gradient clip | 5.0 |
-| Epsilon decay | 1.0 → 0.05 over 150 episodes |
-| Reward scale | `/3.0` clipped to `[-2, +2]` |
-
----
-
-## Reward Function
-
-```python
-# src/agent/reward_system.py
-CORRECT_ACTIONS = {0: [0], 1: [3], 2: [4], 3: [1, 2]}
-DANGER_GAS_IDS  = {1, 2}
-
-def compute_reward(state, action, gas_id, anomaly=None):
-    norm_anomaly = anomaly if anomaly is not None else float(state[0])
-    
-    reward = 0.0
-    if action in CORRECT_ACTIONS[gas_id]:
-        reward += 2.0
-        if gas_id in DANGER_GAS_IDS:
-            reward += norm_anomaly          # severity bonus (0–1)
-    else:
-        reward -= 2.0
-
-    if gas_id in DANGER_GAS_IDS and action == 0:
-        reward -= 10.0                      # worst case: ignored dangerous gas
-    if gas_id == 0 and action >= 3:
-        reward -= 4.0                       # false emergency alarm
-
-    if gas_id == 1 and action == 3: reward += 1.0   # Smoke → Raise Alarm
-    if gas_id == 2 and action == 4: reward += 1.0   # Mixture → Emergency
-
-    if gas_id == 3:
-        if   anomaly > 0.5 and action == 2: reward += 0.8   # high VOC → verify
-        elif anomaly > 0.5 and action == 1: reward -= 0.5   # under-response
-        elif anomaly <= 0.5 and action == 1: reward += 0.5  # low VOC → sample
-
-    return float(np.clip(reward / 3.0, -2.0, 2.0))
-```
-
----
-
-## Validated Results
-
-| Metric | Value |
-|--------|-------|
-| Overall decision accuracy | **92.55%** (1,181 / 1,276) |
-| Danger miss rate | **0.0000%** (0 / 636 hazardous samples) |
-| False alarm rate | **0.0000%** (0 / 652 NoGas alerts) |
-| Policy entropy | 1.5187 (max theoretical = 1.609 for 5 actions) |
-| Action 2 used | 81 times — mid-severity Perfume response active |
-| Mean inference latency | ~0.46ms CPU |
-| Latency P99 | ~0.73ms CPU |
-
-**Per-class classification report:**
-
-| Class | Precision | Recall | F1 | Support |
-|-------|-----------|--------|----|---------|
-| NoGas | 0.96 | 0.99 | 0.97 | 320 |
-| Smoke | 0.93 | 0.85 | 0.88 | 321 |
-| Mixture | 0.85 | 0.97 | 0.90 | 315 |
-| Perfume | 0.98 | 0.90 | 0.94 | 320 |
-| **Macro avg** | **0.93** | **0.93** | **0.93** | **1,276** |
-
-> **On the Mixture anomaly paradox:** Mixture gas shows anomaly ≈ 0.10 — the lowest of all four classes. This is expected and by design. The LSTM autoencoder was trained on all gas types and learned to reconstruct Mixture sensor patterns with low mean-squared error, producing a paradoxically low anomaly score for the most dangerous gas. The DQN correctly handles this by classifying Mixture using the 14 temporal features (delta + std), not the anomaly signal.
-
----
-
-## Key Bugs Fixed
-
-| Bug | Severity | Effect | Fix Applied |
-|-----|----------|--------|------------|
-| `gas_id` from YOLO class index | **Critical** | Policy semantically inverted — Mixture→Monitor, NoGas→Alarm | Use `GAS_MAP[lbl]` not `int(gid)` |
-| `target_q.clamp(-5, 5)` | **Critical** | All Q-values converge to ~5.0, policy random (confidence 0.0003) | Remove clamp entirely |
-| `reward / 6.0` clipped `[-1, +1]` | **High** | Reward too narrow, feeds Q-value saturation | Change to `/ 3.0`, clip `[-2, +2]` |
-| `reward_system.py` anomaly thresholds | **Critical** | Mixture (anomaly≈0.10) rewarded for Monitor, not Emergency | Rewrite using `gas_id + action` |
-| Random split on windowed data | **High** | ~24,000 overlapping raw rows inflate test accuracy | Block-wise holdout with gap=20 |
-| Cross-class boundary overlap (57 rows) | **Medium** | GAP handles within-class but not cross-class | Add `BOUNDARY_TRIM=20` |
-| `MAX_STEPS_PER_EPISODE = 40` | **Medium** | Only 160 / 1,276 test samples evaluated | Change to 400 |
-| `ENABLE_EXPLANATIONS = False` | **Medium** | Explanations silently disabled | Set to `True`; use rule-based engine |
-
----
-
-## Explainability — used of Gemma3:1b for explainability layer
-
-Every decision automatically generates two outputs in both `main.py` and `app.py`:
-
-**Decision Explanation** covers:
-- Why this gas class was identified given its sensor profile
-- What the anomaly score means for this class (including the Mixture paradox)
-- Q-value gap analysis and confidence level description
-- The exact safety protocol the response triggers
-
-**Safety Critique** covers:
-- Confidence level vs the 0.25 operational safety threshold
-- Whether the decision meets gas station safety standards
-- Risk implications of an incorrect decision in deployment
-- Architecture notes explaining counterintuitive readings
-
-Both are generated from the decision data using domain-expert rules — fast, deterministic, no API, no Ollama.
 
 ---
 
 ## Technology Stack
 
 | Component | Technology |
-|-----------|-----------|
-| Gas detection (vision) | YOLOv8 (ultralytics) |
-| Anomaly detection | LSTM Autoencoder (PyTorch) |
-| RL decision model | Dueling Double DQN + PER (PyTorch) |
-| Explainability | Rule-based domain engine (Python) |
+|-----------|------------|
+| Gas sensor anomaly estimation | LSTM Autoencoder (PyTorch) |
+| RL action policy | Dueling Deep Q-Network (PyTorch) |
+| Visual verification | YOLOv8 (Ultralytics) |
+| Explanation / critique | explanation tool + structured validators |
 | Dashboard | Streamlit |
-| Charts | Plotly |
 | Data processing | Pandas, NumPy, scikit-learn |
-
----
-
-## Project File Structure
-
-```
-GasSafeAI/
-├── app.py                           # Streamlit dashboard — run this
-├── main.py                          # CLI verification runner
-├── test_df_processed.csv            # Normalized test set (export from notebook)
-│
-├── models/
-│   ├── DeepQnet.pth               # Trained Dueling DQN weights
-│   └── lstm_autoencoder_weights.pth # LSTM autoencoder
-│   |__ yolov8_gas_classifier.pt
-|   |__ 
-├── gas_dqn_honest_split.ipynb       # Production training notebook
-├── notebook_patches.ipynb           # Critical bug fixes (apply before training)
-├── gas_id_fix_patch.ipynb           # Gas-id mismatch fix and verification cell
-├── zero_overlap_split.ipynb         # Leakage-safe split with boundary trim
-│
-├── src/
-│   ├── agent/
-│   │   ├── agent_core.py            # MultimodalAgent (live streaming mode)
-│   │   ├── reward_system.py         # Reward function (gas_id-based)
-│   │   ├── memory.py                # Short-term memory buffer
-│   │   └── goal_manager.py          # Goal tracking
-|   |   |__ critic.py
-|   |   |__ metrics_logger.py
-|   |   |__ safety.py
-│   └── tools/
-│       ├── decision_tool.py         # DQN model loader and inference
-│       ├── anomaly_tool.py          # LSTM AE wrapper
-│       └── explanation_tool.py      # Optional LLM explanation (Ollama)
-│       |__ vision_tool.py
-├── evaluation_log.csv               # Per-step output (auto-generated)
-├── episode_summary.csv              # Per-class summary (auto-generated)
-└── requirements.txt
-```
-
----
-
-## Installation
-
-```bash
-# 1. Clone repository
-git clone https://github.com/yourname/gassafe-ai.git
-cd gassafe-ai
-
-# 2. Create virtual environment
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-# Linux / Mac
-source .venv/bin/activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-```
-
-**`requirements.txt`:**
-```
-streamlit
-plotly
-pandas
-numpy
-torch
-ultralytics
-scikit-learn
-```
 
 ---
 
 ## Running the System
 
-### CLI Verification (evaluate on full test set)
+### CLI Verification
 
 ```bash
 python main.py
 ```
 
-Output: per-step actions, correctness checks, full explanations, safety critiques, overall accuracy, danger miss rate, false alarm rate. Results auto-saved to `evaluation_log.csv` and `episode_summary.csv`.
+This runs the folder-driven live verification flow and logs:
 
-### Dashboard
+- anomaly values
+- Q-values
+- policy confidence
+- vision outputs
+- final actions
+- explanation
+- critique
+
+### Streamlit Dashboard
 
 ```bash
 streamlit run app.py
 ```
 
-Opens the GasSafe AI Control Dashboard at `http://localhost:8501`.
+This launches the dashboard interface for operator-style monitoring.
 
 ---
 
-## Training the Model
+## Recommended Terminology
 
-Open `gas_dqn_honest_split.ipynb` and apply all patches from `notebook_patches.ipynb` and `gas_id_fix_patch.ipynb` before running.
+For documentation, presentations, and portfolio use, the most accurate wording is:
 
-**Key cells to verify before training:**
+- **central multimodal agent**
+- **specialized functional sub-agents**
+- **implemented as tools/modules in code**
 
-| Cell | What to check |
-|------|---------------|
-| Cell 4 — Dataset building | `gas_id = GAS_MAP[lbl]` not `int(gid)` |
-| Cell 5 — Split | Uses `block_wise_holdout()` with `gap=20` and `boundary_trim=20` |
-| Cell 7 — Reward | Uses `gas_id + action`, not anomaly thresholds |
-| Cell 11 — Agent.learn | NO `.clamp(-5, 5)` on `target_q` |
-| After Cell 6 — Export | Export cell saves `test_df_processed.csv` with correct normalization |
+That gives the best balance between conceptual clarity and implementation truth.
 
 ---
 
-## Sensor Reference
+## Practical One-Line Description
 
-| Sensor | Primary Detection | Notes |
-|--------|-------------------|-------|
-| MQ2 | LPG, Smoke | Propane, hydrogen, methane, alcohol |
-| MQ3 | Alcohol, Ethanol | Vapors, smoke |
-| MQ5 | LPG, Coal Gas | Natural gas, LPG |
-| MQ6 | LPG, Butane | Iso-butane, propane |
-| MQ7 | Carbon Monoxide | CO from incomplete combustion |
-| MQ8 | Hydrogen | Hydrogen gas, alcohol |
-| MQ135 | Air Quality | Ammonia, benzene, NOx, CO2 |
+> **A multimodal agentic gas safety decision system that combines temporal sensor modeling, anomaly detection, Dueling DQN action selection, thermal-image verification, and operator-facing interpretability.**
 
 ---
 
-## License
+## Short Repo Summary
 
-*MIT License — see `LICENSE` for full terms.
+```text
+This project is an agentic multimodal industrial gas safety system.
+
+It uses:
+- gas sensor time-series windows
+- an LSTM autoencoder for anomaly estimation
+- a Dueling Deep Q-Network for autonomous safety action selection
+- YOLO-based thermal-image verification
+- explanation and critique layers for operator-facing interpretability
+
+The system is agentic because it perceives, interprets, decides, verifies, explains, and logs autonomously.
+It is not a distributed multi-agent swarm, but a central multimodal agent with specialized decision-support sub-agents.
+```
+
+---
+
+## Final Note
+
+If you are describing this project publicly, the most accurate summary is:
+
+- the system is **agentic**
+- the main decision policy is **Dueling DQN over a 22-dimensional sensor/anomaly state**
+- the Anomaly Agent estimates abnormality from sensor reconstruction error
+- the Vision Agent acts as a **visual verifier / escalation branch**
+- the architecture is **centralized and modular**
+- the system uses **specialized sub-agents implemented as tools/modules in code**
