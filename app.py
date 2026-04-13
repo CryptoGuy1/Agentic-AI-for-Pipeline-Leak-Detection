@@ -4,8 +4,10 @@ Central Multimodal Agent · Folder-Driven Live Monitor
 """
 
 import hashlib
+import re
 import time
 from pathlib import Path
+
 
 import numpy as np
 import pandas as pd
@@ -348,12 +350,12 @@ def inject_css():
         color: rgba(34,211,238,0.4);
     }
     .expl-content {
-        font-family: var(--mono);
-        font-size: 12px;
-        line-height: 1.8;
-        color: #a0b4cc;
-        white-space: pre-wrap;
-    }
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
+    color: #a0b4cc;
+    white-space: pre-wrap;
+    }            
     .expl-empty {
         font-family: var(--mono);
         font-size: 11px;
@@ -381,11 +383,11 @@ def inject_css():
         color: rgba(245,158,11,0.4);
     }
     .crit-content {
-        font-family: var(--mono);
-        font-size: 12px;
-        line-height: 1.8;
-        color: #b8a070;
-        white-space: pre-wrap;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.45;
+    color: #b8a070;
+    white-space: pre-wrap;
     }
     .crit-empty {
         font-family: var(--mono);
@@ -673,6 +675,25 @@ def safe_num(val, fmt=".4f", fallback="—") -> str:
     except (TypeError, ValueError):
         return str(val)
 
+def normalize_render_text(text: str) -> str:
+    """
+    Aggressively clean explanation / critique text before rendering:
+    - normalize Windows newlines
+    - strip each line
+    - collapse ALL repeated blank lines to a single newline
+    - trim outer whitespace
+    """
+    if text is None:
+        return ""
+
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(lines)
+
+    # collapse any run of blank lines into a single newline
+    text = re.sub(r"\n\s*\n+", "\n", text)
+
+    return text.strip()
 
 def render_explanation(text, enabled: bool):
     """Always render the explanation block — shows state clearly."""
@@ -683,7 +704,8 @@ def render_explanation(text, enabled: bool):
     elif str(text).strip() in ("", "disabled", "None"):
         content = f'<span class="expl-empty">⚠ Explanation returned an empty or disabled string: "{text}"</span>'
     else:
-        escaped = str(text).replace("<", "&lt;").replace(">", "&gt;")
+        cleaned = normalize_render_text(text)
+        escaped = cleaned.replace("<", "&lt;").replace(">", "&gt;")
         content = f'<span class="expl-content">{escaped}</span>'
 
     st.markdown(f'<div class="expl-wrapper">{content}</div>', unsafe_allow_html=True)
@@ -698,11 +720,11 @@ def render_critique(text, enabled: bool):
     elif str(text).strip() in ("", "disabled", "None"):
         content = f'<span class="crit-empty">⚠ Critique returned an empty or disabled string: "{text}"</span>'
     else:
-        escaped = str(text).replace("<", "&lt;").replace(">", "&gt;")
+        cleaned = normalize_render_text(text)
+        escaped = cleaned.replace("<", "&lt;").replace(">", "&gt;")
         content = f'<span class="crit-content">{escaped}</span>'
 
     st.markdown(f'<div class="crit-wrapper">{content}</div>', unsafe_allow_html=True)
-
 
 def render_vision_block(r):
     if r.get("vision_error"):
