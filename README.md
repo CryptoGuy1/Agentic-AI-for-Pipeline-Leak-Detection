@@ -82,146 +82,174 @@ It does this by combining:
 
 ## Comprehensive System Workflow
 
-```text
-                                       ┌───────────────────────────────┐
-                                       │         Operator / User        │
-                                       │   - runs main.py or app.py     │
-                                       │   - reviews outputs            │
-                                       │   - inspects dashboard         │
-                                       └──────────────┬────────────────┘
-                                                      │
-                           ┌──────────────────────────┴──────────────────────────┐
-                           │                                                     │
-                           ▼                                                     ▼
-             ┌───────────────────────────────┐                 ┌───────────────────────────────┐
-             │            main.py             │                 │            app.py              │
-             │   Folder-Driven Live Test      │                 │     Streamlit Dashboard        │
-             │   - loads models/tools         │                 │   - loads same agent pipeline  │
-             │   - selects image per class    │                 │   - runs same live workflow    │
-             │   - runs one case per class    │                 │   - renders UI + charts        │
-             └──────────────┬────────────────┘                 └──────────────┬────────────────┘
-                            │                                                 │
-                            └──────────────────────┬──────────────────────────┘
-                                                   ▼
-                              ┌──────────────────────────────────────────────┐
-                              │            MultimodalAgent                   │
-                              │      Central Orchestrator / Main Agent       │
-                              │                                              │
-                              │  Coordinates the specialized sub-agents:     │
-                              │  - Anomaly Agent                             │
-                              │  - Decision Agent                            │
-                              │  - Vision Agent                              │
-                              │  - Explanation Agent                         │
-                              │  - Critique Agent                            │
-                              │  - Memory / Logging                          │
-                              └──────────────────────┬───────────────────────┘
-                                                     │
-                     ┌───────────────────────────────┼───────────────────────────────┐
-                     │                               │                               │
-                     ▼                               ▼                               ▼
-      ┌───────────────────────────┐    ┌───────────────────────────┐   ┌───────────────────────────┐
-      │   Thermal Image Input      │    │ Sensor Time-Series Input  │   │   Agent Context / State   │
-      │   - class folder image     │    │ - raw CSV sensor rows     │   │ - step index              │
-      │   - matched image path     │    │ - 7 MQ sensors            │   │ - label / gas_id          │
-      └──────────────┬────────────┘    └──────────────┬────────────┘   └──────────────┬────────────┘
-                     │                                 │                               │
-                     │                                 ▼                               │
-                     │              ┌──────────────────────────────────────────────┐   │
-                     │              │            Sliding Window Builder            │   │
-                     │              │   - maintains 20-step sensor history        │   │
-                     │              │   - extracts current / delta / std          │   │
-                     │              └──────────────────────┬───────────────────────┘   │
-                     │                                     │                           │
-                     │                                     ▼                           │
-                     │              ┌──────────────────────────────────────────────┐   │
-                     │              │              Anomaly Agent                   │   │
-                     │              │        (LSTM Autoencoder / AnomalyTool)      │   │
-                     │              │   - computes raw anomaly                     │   │
-                     │              │   - computes normalized anomaly              │   │
-                     │              └──────────────────────┬───────────────────────┘   │
-                     │                                     │                           │
-                     │                                     ▼                           │
-                     │              ┌──────────────────────────────────────────────┐   │
-                     │              │                State Builder                 │   │
-                     │              │      22-feature RL state construction        │   │
-                     │              │ [ anomaly | current | delta | std ]          │   │
-                     │              └──────────────────────┬───────────────────────┘   │
-                     │                                     │                           │
-                     │                                     ▼                           │
-                     │              ┌──────────────────────────────────────────────┐   │
-                     │              │              Decision Agent                  │   │
-                     │              │      (Dueling Deep Q-Network / DQN)          │   │
-                     │              │                                              │   │
-                     │              │   Actions:                                   │   │
-                     │              │   0 → Monitor                                │   │
-                     │              │   1 → Increase Sampling                      │   │
-                     │              │   2 → Request Verification                   │   │
-                     │              │   3 → Raise Alert                            │   │
-                     │              │   4 → Emergency Shutdown                     │   │
-                     │              └──────────────────────┬───────────────────────┘   │
-                     │                                     │                           │
-                     │                                     ▼                           │
-                     │              ┌──────────────────────────────────────────────┐   │
-                     │              │        Safety Override / Guardrails          │   │
-                     │              │   - deterministic escalation rules           │   │
-                     │              │   - action_after_safety                      │   │
-                     │              └──────────────────────┬───────────────────────┘   │
-                     │                                     │                           │
-                     ▼                                     ▼                           │
-      ┌───────────────────────────┐    ┌──────────────────────────────────────────────┐│
-      │        Vision Agent        │    │      Vision Verification / Escalation        ││
-      │   (YOLOv8 / VisionTool)    │    │   - compares sensor decision vs image        ││
-      │   - visual gas class       │───▶│   - escalates on strong dangerous evidence   ││
-      │   - visual confidence      │    │   - produces final action                    ││
-      │   - canonical gas mapping  │    └──────────────────────┬───────────────────────┘│
-      └───────────────────────────┘                           │                        │
-                                                              ▼                        │
-                                   ┌──────────────────────────────────────────────┐    │
-                                   │         Explanation Agent                    │    │
-                                   │  (ExplanationTool → Ollama → gemma3:1b)      │    │
-                                   │  - explains what happened                    │    │
-                                   │  - interprets sensor + policy + vision       │    │
-                                   └──────────────────────┬───────────────────────┘    │
-                                                          ▼                            │
-                                   ┌──────────────────────────────────────────────┐    │
-                                   │            Critique Agent                    │    │
-                                   │   - audits confidence / robustness           │    │
-                                   │   - checks anomaly-action consistency        │    │
-                                   │   - critiques final decision                 │    │
-                                   └──────────────────────┬───────────────────────┘    │
-                                                          ▼                            │
-                                   ┌──────────────────────────────────────────────┐    │
-                                   │         Memory / Logging Layer               │◀───┘
-                                   │   - stores structured outputs                │
-                                   │   - action chain                             │
-                                   │   - anomaly / confidence                     │
-                                   │   - vision report                            │
-                                   │   - explanation / critique                   │
-                                   │   - latency                                  │
-                                   └──────────────────────┬───────────────────────┘
-                                                          ▼
-                                   ┌──────────────────────────────────────────────┐
-                                   │         Final Structured Output              │
-                                   │  - raw action                               │
-                                   │  - action after safety                      │
-                                   │  - final action                             │
-                                   │  - anomaly / Q-values / confidence          │
-                                   │  - YOLO result / vision reason              │
-                                   │  - explanation / critique                   │
-                                   │  - correctness / reward / latency           │
-                                   └──────────────────────┬───────────────────────┘
-                                                          │
-                           ┌──────────────────────────────┼──────────────────────────────┐
-                           │                              │                              │
-                           ▼                              ▼                              ▼
-          ┌───────────────────────────────┐   ┌───────────────────────────────┐   ┌───────────────────────────────┐
-          │   Console Output (main.py)    │   │  Dashboard Display (app.py)   │   │   CSV / Session State / Logs  │
-          │   - per-case results          │   │  - Overview tab               │   │   - structured export         │
-          │   - explanation / critique    │   │  - Case Details tab           │   │   - reusable run state        │
-          │   - live verification print   │   │  - Structured Table tab       │   │   - diagnostics history       │
-          └───────────────────────────────┘   └───────────────────────────────┘   └───────────────────────────────┘
+## Comprehensive End-to-End Flow Diagram
 
----
+```text
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                OPERATOR / USER ENTRY POINTS                                │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                     ┌────────────────┴────────────────┐
+                     │                                 │
+                     ▼                                 ▼
+     ┌────────────────────────────────┐   ┌────────────────────────────────┐
+     │            main.py             │   │            app.py              │
+     │   Folder-Driven Live Test      │   │      Streamlit Dashboard       │
+     │                                │   │                                │
+     │ - loads model/tool paths       │   │ - loads model/tool paths       │
+     │ - loads raw CSV                │   │ - loads raw CSV                │
+     │ - selects image per class      │   │ - selects image per class      │
+     │ - prepares one case per class  │   │ - prepares one case per class  │
+     │ - calls MultimodalAgent        │   │ - calls MultimodalAgent        │
+     └────────────────┬───────────────┘   └────────────────┬───────────────┘
+                      │                                    │
+                      └────────────────┬───────────────────┘
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 MULTIMODALAGENT (CENTRAL AGENT)                             │
+│                         Main Orchestrator / Runtime Coordinator                              │
+│                                                                                              │
+│ Coordinates:                                                                                 │
+│ - Sliding Window logic                                                                       │
+│ - Anomaly Agent                                                                              │
+│ - State Builder                                                                              │
+│ - Decision Agent                                                                             │
+│ - Safety Override                                                                            │
+│ - Vision Agent                                                                               │
+│ - Explanation Agent                                                                          │
+│ - Critique Agent                                                                             │
+│ - Memory / Logging                                                                           │
+└──────────────────────────────────────────────┬───────────────────────────────────────────────┘
+                                               │
+                    ┌──────────────────────────┼──────────────────────────┐
+                    │                          │                          │
+                    ▼                          ▼                          ▼
+     ┌───────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────────┐
+     │   Thermal Image Input      │   │ Sensor Time-Series Input  │   │     Runtime Context       │
+     │                            │   │                            │   │                            │
+     │ - matched image path       │   │ - raw MQ sensor rows      │   │ - step index              │
+     │ - class-folder image       │   │ - MQ2, MQ3, MQ5, MQ6,     │   │ - gas label / gas_id      │
+     │                            │   │   MQ7, MQ8, MQ135         │   │ - run settings            │
+     └──────────────┬────────────┘   └──────────────┬────────────┘   └──────────────┬────────────┘
+                    │                               │                               │
+                    │                               ▼                               │
+                    │            ┌──────────────────────────────────────────────┐   │
+                    │            │              Sliding Window                  │   │
+                    │            │              20-step history                 │   │
+                    │            │                                              │   │
+                    │            │ - maintains rolling sensor buffer            │   │
+                    │            │ - extracts current row                       │   │
+                    │            │ - computes delta across window               │   │
+                    │            │ - computes std across window                 │   │
+                    │            └──────────────────────┬───────────────────────┘   │
+                    │                                   │                           │
+                    │                                   ▼                           │
+                    │            ┌──────────────────────────────────────────────┐   │
+                    │            │              Anomaly Agent                   │   │
+                    │            │         (LSTM Autoencoder)                   │   │
+                    │            │                                              │   │
+                    │            │ - computes raw anomaly score                 │   │
+                    │            │ - computes normalized anomaly                │   │
+                    │            └──────────────────────┬───────────────────────┘   │
+                    │                                   │                           │
+                    └───────────────────────┬───────────┴───────────┬──────────────┘
+                                            ▼                       ▼
+                         ┌────────────────────────────────────────────────────┐
+                         │                  State Builder                     │
+                         │           22-feature RL state construction         │
+                         │                                                    │
+                         │  [ anomaly | current | delta | std ]               │
+                         └──────────────────────────┬─────────────────────────┘
+                                                    ▼
+                         ┌────────────────────────────────────────────────────┐
+                         │                Decision Agent                      │
+                         │         (Dueling Deep Q-Network Policy)            │
+                         │                                                    │
+                         │  Raw Action Output:                                │
+                         │  0 → Monitor                                       │
+                         │  1 → Increase Sampling                             │
+                         │  2 → Request Verification                          │
+                         │  3 → Raise Alert                                   │
+                         │  4 → Emergency Shutdown                            │
+                         └──────────────────────────┬─────────────────────────┘
+                                                    ▼
+                         ┌────────────────────────────────────────────────────┐
+                         │           Safety Override / Guardrails             │
+                         │                                                    │
+                         │ - checks whether raw action is too weak            │
+                         │ - applies deterministic safety escalation rules    │
+                         │ - produces action_after_safety                     │
+                         └──────────────────────────┬─────────────────────────┘
+                                                    │
+                                                    ▼
+                         ┌────────────────────────────────────────────────────┐
+                         │                 Vision Agent                       │
+                         │             (YOLOv8 / VisionTool)                  │
+                         │                                                    │
+                         │ - predicts visual gas class                        │
+                         │ - predicts visual confidence                       │
+                         │ - maps YOLO class → canonical gas_id              │
+                         └──────────────────────────┬─────────────────────────┘
+                                                    ▼
+                         ┌────────────────────────────────────────────────────┐
+                         │        Vision Verification / Escalation            │
+                         │                                                    │
+                         │ - compares sensor-based decision with image        │
+                         │ - uses YOLO class + confidence                     │
+                         │ - escalates on strong dangerous visual evidence    │
+                         │ - produces final action                            │
+                         └──────────────────────────┬─────────────────────────┘
+                                                    ▼
+                         ┌────────────────────────────────────────────────────┐
+                         │      Explanation Agent + Critique Agent            │
+                         │                                                    │
+                         │  Explanation Agent:                                │
+                         │  - explains what happened                          │
+                         │  - interprets sensor + policy + vision             │
+                         │                                                    │
+                         │  Critique Agent:                                   │
+                         │  - audits confidence / robustness                  │
+                         │  - checks anomaly-action consistency               │
+                         │  - critiques final decision                        │
+                         └──────────────────────────┬─────────────────────────┘
+                                                    ▼
+                         ┌────────────────────────────────────────────────────┐
+                         │             Memory / Logging Layer                 │
+                         │                                                    │
+                         │ - raw action                                       │
+                         │ - action after safety                              │
+                         │ - final action                                     │
+                         │ - anomaly values                                   │
+                         │ - Q-values / confidence                            │
+                         │ - YOLO outputs / vision reason                     │
+                         │ - explanation / critique                           │
+                         │ - reward / correctness / latency                   │
+                         └──────────────────────────┬─────────────────────────┘
+                                                    ▼
+                         ┌────────────────────────────────────────────────────┐
+                         │              Structured Result Output              │
+                         │                                                    │
+                         │ - final safety action                              │
+                         │ - anomaly score                                    │
+                         │ - policy confidence                                │
+                         │ - vision result                                    │
+                         │ - explanation                                      │
+                         │ - critique                                         │
+                         │ - logged structured result                         │
+                         └──────────────────────────┬─────────────────────────┘
+                                                    │
+                   ┌────────────────────────────────┼────────────────────────────────┐
+                   │                                │                                │
+                   ▼                                ▼                                ▼
+   ┌────────────────────────────────┐  ┌────────────────────────────────┐  ┌────────────────────────────────┐
+   │        main.py Display         │  │       app.py Dashboard        │  │       Saved / Exported Logs    │
+   │                                │  │                                │  │                                │
+   │ - console case results         │  │ - Overview tab                 │  │ - session state results        │
+   │ - explanation / critique       │  │ - Case Details tab             │  │ - downloadable CSV             │
+   │ - folder-driven verification   │  │ - Structured Table tab         │  │ - diagnostics history          │
+   └────────────────────────────────┘  └────────────────────────────────┘  └────────────────────────────────┘
+
+```
 
 ## Current Action Space
 
